@@ -1,1 +1,1 @@
-pub mod dict_combine;
+pub mod dictionary;
