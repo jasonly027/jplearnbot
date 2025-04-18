@@ -28,8 +28,7 @@ pub struct Reading {
     #[serde(rename = "reb")]
     pub hiragana: String,
 
-    #[serde(rename = "re_restr")]
-    #[serde(default)]
+    #[serde(rename = "re_restr", default, skip_serializing_if = "Vec::is_empty")]
     pub relevant_to: Vec<String>,
 
     #[serde(rename = "re_inf", default, skip_serializing_if = "Vec::is_empty")]

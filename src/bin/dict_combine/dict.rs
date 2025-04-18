@@ -4,23 +4,24 @@ use std::{
     fs::{self, File},
     io::{BufRead, BufReader},
     path::Path,
-    process,
     rc::Rc,
 };
 
-use jplearnbot::dictionary::Entry;
+use jplearnbot::{dictionary::Entry, open_reader};
 use reqwest::blocking as req;
 
-pub fn get_dict(file: &Path, no_cache: bool) -> HashMap<String, Rc<Entry>> {
+pub fn get_dict(file: &Path, no_cache: bool) -> HashMap<String, Vec<Rc<Entry>>> {
     let entries: Vec<Rc<Entry>> = get_entries(file, no_cache)
         .into_iter()
         .map(Rc::new)
         .collect();
 
-    let mut map: HashMap<String, Rc<Entry>> = HashMap::new();
+    let mut map: HashMap<String, Vec<Rc<Entry>>> = HashMap::new();
     for entry in entries {
         for reading in &entry.readings {
-            map.insert(reading.hiragana.clone(), entry.clone());
+            map.entry(reading.hiragana.clone())
+                .or_default()
+                .push(entry.clone());
         }
     }
 
@@ -28,22 +29,14 @@ pub fn get_dict(file: &Path, no_cache: bool) -> HashMap<String, Rc<Entry>> {
 }
 
 fn get_entries(file: &Path, no_cache: bool) -> Vec<Entry> {
-    let reader = get_dfile(file, no_cache).unwrap_or_else(|e| {
-        eprintln!("Failed to open dfile: {e}");
-        process::exit(-1);
-    });
+    let reader = get_dfile(file, no_cache);
 
     let mut entries: Vec<Entry> = Vec::new();
     for line in reader.lines() {
-        let line = line.unwrap_or_else(|e| {
-            eprintln!("Invalid byte read in dfile: {e}");
-            process::exit(-1);
-        });
+        let line = line.unwrap_or_else(|e| panic!("Invalid byte read in dfile:\n{e}"));
 
-        let entry = serde_json::from_str(&line).unwrap_or_else(|e| {
-            eprintln!("JSON Parse error: {e}");
-            process::exit(-1);
-        });
+        let entry =
+            serde_json::from_str(&line).unwrap_or_else(|e| panic!("JSON Parse error:\n{e}"));
 
         entries.push(entry);
     }
@@ -51,18 +44,19 @@ fn get_entries(file: &Path, no_cache: bool) -> Vec<Entry> {
     entries
 }
 
-fn get_dfile(file: &Path, no_cache: bool) -> Result<BufReader<File>, Box<dyn Error>> {
+fn get_dfile(path: &Path, no_cache: bool) -> BufReader<File> {
     // Download if missing or explicitly requested
-    if !file.exists() || no_cache {
-        download_dict(file)?;
+    if !path.exists() || no_cache {
+        download_dict(path)
+            .unwrap_or_else(|e| panic!("Failed to download dfile to {}\n{e}", path.display()));
     }
 
-    Ok(BufReader::new(File::open(file)?))
+    open_reader(path)
 }
 
-fn download_dict(file: &Path) -> Result<(), Box<dyn Error>> {
+fn download_dict(destination: &Path) -> Result<(), Box<dyn Error>> {
     const URL: &str = "https://gitlab.com/jgrind/jmdict/-/raw/main/jmdict.jsonl?ref_type=heads";
     let content = req::get(URL)?.bytes()?;
-    fs::write(file, content)?;
+    fs::write(destination, content)?;
     Ok(())
 }

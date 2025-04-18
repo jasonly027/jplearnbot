@@ -1,60 +1,46 @@
-use std::{
-    fs::File,
-    io::{self, BufRead, BufReader},
-    path::Path,
-    process,
-};
+use std::{io::BufRead, path::Path};
 
-pub fn get_entries(dir: &Path) -> Vec<String> {
-    let mut entries: Vec<String> = Vec::new();
+use jplearnbot::open_reader;
+
+pub type JLPTEntry = (String, Option<String>);
+
+pub fn get_entries(dir: &Path) -> Vec<JLPTEntry> {
+    let mut entries: Vec<JLPTEntry> = Vec::new();
 
     for file_no in 1..=4 {
-        let reader = get_jfile(dir, file_no).unwrap_or_else(|e| {
-            eprintln!("Error opening jfile: {e}");
-            process::exit(-1);
-        });
+        let path = dir.join(format!("jlpt-voc-{file_no}.utf.txt"));
+        let reader = open_reader(&path);
 
         for line in reader.lines() {
-            let line = line.unwrap_or_else(|e| {
-                eprintln!("Invalid byte read in jfile: {e}");
-                process::exit(-1);
-            });
+            let line = line.unwrap_or_else(|e| panic!("Invalid byte read in jfile:\n{e}"));
 
-            let Some(hiragana) = extract_hiragana(&line) else {
+            let Some(entry) = extract_entry(&line) else {
                 continue;
             };
 
-            entries.push(hiragana);
+            entries.push(entry);
         }
     }
 
     entries
 }
 
-fn extract_hiragana(line: &str) -> Option<String> {
+fn extract_entry(line: &str) -> Option<JLPTEntry> {
     if line.starts_with("#") || line.is_empty() || line.contains("~") {
         return None;
     }
 
     // Remove parenthesized note
-    let no_comment = line.split_once("（").map_or(line, |(before, _)| before);
-    let fields: Vec<&str> = no_comment.split_whitespace().collect();
+    let no_note = line.split_once("（").map_or(line, |(left, _)| left);
+    let fields: Vec<&str> = no_note.split_whitespace().collect();
 
     match fields.len() {
         // Kanji isn't present, hiragana is first in line
-        1 => Some(fields[0].to_string()),
+        1 => Some((fields[0].to_string(), None)),
         // Kanji is present, hiragana is second in line
-        2 => Some(fields[1].to_string()),
-        _ => {
-            eprintln!("Error extracting hiragana:\n\t{line}");
-            process::exit(-1);
-        }
+        2 => Some((fields[1].to_string(), Some(fields[0].to_string()))),
+        _ => panic!("Error extracting hiragana:\n\t{line}"),
     }
-}
-
-fn get_jfile(path: &Path, file_no: u8) -> Result<BufReader<File>, io::Error> {
-    let jlpt_path = path.join(format!("jlpt-voc-{file_no}.utf.txt"));
-    Ok(BufReader::new(File::open(&jlpt_path)?))
 }
 
 // cat
