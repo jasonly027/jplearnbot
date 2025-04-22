@@ -10,8 +10,8 @@ use std::{
 use jplearnbot::{dictionary::Entry, open_reader};
 use reqwest::blocking as req;
 
-pub fn get_dict(file: &Path, no_cache: bool) -> HashMap<String, Vec<Rc<Entry>>> {
-    let entries: Vec<Rc<Entry>> = get_entries(file, no_cache)
+pub fn dict(file: &Path, no_cache: bool) -> HashMap<String, Vec<Rc<Entry>>> {
+    let entries: Vec<Rc<Entry>> = entries(file, no_cache)
         .into_iter()
         .map(Rc::new)
         .collect();
@@ -28,8 +28,8 @@ pub fn get_dict(file: &Path, no_cache: bool) -> HashMap<String, Vec<Rc<Entry>>> 
     map
 }
 
-fn get_entries(file: &Path, no_cache: bool) -> Vec<Entry> {
-    let reader = get_dfile(file, no_cache);
+fn entries(file: &Path, no_cache: bool) -> Vec<Entry> {
+    let reader = dfile(file, no_cache);
 
     let mut entries: Vec<Entry> = Vec::new();
     for line in reader.lines() {
@@ -44,7 +44,7 @@ fn get_entries(file: &Path, no_cache: bool) -> Vec<Entry> {
     entries
 }
 
-fn get_dfile(path: &Path, no_cache: bool) -> BufReader<File> {
+fn dfile(path: &Path, no_cache: bool) -> BufReader<File> {
     // Download if missing or explicitly requested
     if !path.exists() || no_cache {
         download_dict(path)

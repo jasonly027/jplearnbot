@@ -11,10 +11,10 @@ use jplearnbot::dictionary::Entry;
 use crate::{dict, jlpt};
 
 pub fn run(dir: &Path, overwrite: bool, no_cache: bool) {
-    let dict = dict::get_dict(&dir.join("jmdict.jsonl"), no_cache);
-    let entries = jlpt::get_entries(dir);
+    let dict = dict::dict(&dir.join("jmdict.jsonl"), no_cache);
+    let entries = jlpt::entries(dir);
 
-    let mut writer = get_writer(dir, overwrite);
+    let mut writer = writer(dir, overwrite);
 
     let mut write_entry = |entry: &Entry| {
         let mut str = serde_json::to_string(entry).unwrap();
@@ -27,7 +27,6 @@ pub fn run(dir: &Path, overwrite: bool, no_cache: bool) {
 
     for (hiragana, kanji) in &entries {
         let Some(matches) = dict.get(hiragana) else {
-            println!("{hiragana}");
             continue;
         };
 
@@ -66,7 +65,7 @@ pub fn run(dir: &Path, overwrite: bool, no_cache: bool) {
     writer.flush().expect("Failed to flush to output");
 }
 
-fn get_writer(dir: &Path, overwrite: bool) -> BufWriter<File> {
+fn writer(dir: &Path, overwrite: bool) -> BufWriter<File> {
     let file = OpenOptions::new()
         .write(true)
         .create(true)

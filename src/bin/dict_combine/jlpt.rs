@@ -4,7 +4,7 @@ use jplearnbot::open_reader;
 
 pub type JLPTEntry = (String, Option<String>);
 
-pub fn get_entries(dir: &Path) -> Vec<JLPTEntry> {
+pub fn entries(dir: &Path) -> Vec<JLPTEntry> {
     let mut entries: Vec<JLPTEntry> = Vec::new();
 
     for file_no in 1..=4 {
