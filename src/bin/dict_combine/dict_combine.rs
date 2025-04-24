@@ -2,7 +2,6 @@ use std::{
     fs::{File, OpenOptions},
     io::{BufWriter, Write},
     path::Path,
-    process,
     rc::Rc,
 };
 
@@ -38,10 +37,10 @@ pub fn run(dir: &Path, overwrite: bool, no_cache: bool) {
 
         // Multiple definitions match the entry, try
         // narrowing to one by cross referencing kanji
-        if let Some(kanji) = kanji {
-            // Entry has kanji, write the match that is the only one
-            // with the same kanji, if it exists
 
+        // Entry has kanji, write the match that is the only one
+        // with the same kanji, if it exists
+        if let Some(kanji) = kanji {
             let matches: Vec<&Rc<Entry>> = matches
                 .iter()
                 .filter(|m| m.kanjis.iter().any(|k| *kanji == k.kanji))
@@ -50,10 +49,9 @@ pub fn run(dir: &Path, overwrite: bool, no_cache: bool) {
             if matches.len() == 1 {
                 write_entry(matches[0]);
             }
+        // Entry has no kanji, write the match that is the only one
+        // without kanji too, if it exists
         } else {
-            // Entry has no kanji, write the match that is the only one
-            // without kanji too, if it exists
-
             let matches: Vec<&Rc<Entry>> = matches.iter().filter(|m| m.kanjis.is_empty()).collect();
 
             if matches.len() == 1 {
@@ -68,13 +66,11 @@ pub fn run(dir: &Path, overwrite: bool, no_cache: bool) {
 fn writer(dir: &Path, overwrite: bool) -> BufWriter<File> {
     let file = OpenOptions::new()
         .write(true)
-        .create(true)
+        .create_new(!overwrite)
+        .create(overwrite)
         .truncate(overwrite)
         .open(dir.join("dictionary.jsonl"))
-        .unwrap_or_else(|e| {
-            eprintln!("Error writing output:\n\t{e}");
-            process::exit(-1);
-        });
+        .unwrap_or_else(|e| panic!("Error writing output:\n{e}"));
 
     BufWriter::new(file)
 }

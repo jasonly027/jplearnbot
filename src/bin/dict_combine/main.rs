@@ -17,7 +17,7 @@ struct Args {
     /// Overwite already downloaded JMDict file
     no_cache: bool,
 
-    /// Directory containing JMDict, JLPT files, and where to save genearted file (default: working directory)
+    /// Directory containing JMDict, JLPT files, and where to save generated file (default: working directory)
     directory: Option<PathBuf>,
 }
 
