@@ -1,24 +1,17 @@
-use std::{
-    collections::HashMap,
-    error::Error,
-    fs::{self, File},
-    io::{BufRead, BufReader},
-    path::Path,
-    rc::Rc,
-};
+use std::{cell::RefCell, collections::HashMap, io::BufRead, path::Path, rc::Rc};
 
-use jplearnbot::{dictionary::Entry, open_reader};
-use reqwest::blocking as req;
+use jplearnbot::{dictionary::DictEntry, open_reader};
 
-pub fn dict(file: &Path, no_cache: bool) -> HashMap<String, Vec<Rc<Entry>>> {
-    let entries: Vec<Rc<Entry>> = entries(file, no_cache)
+pub fn dict(file: &Path) -> HashMap<String, Vec<Rc<RefCell<DictEntry>>>> {
+    let entries: Vec<_> = entries(file)
         .into_iter()
+        .map(RefCell::new)
         .map(Rc::new)
         .collect();
 
-    let mut map: HashMap<String, Vec<Rc<Entry>>> = HashMap::new();
+    let mut map: HashMap<String, Vec<_>> = HashMap::new();
     for entry in entries {
-        for reading in &entry.readings {
+        for reading in &entry.borrow().readings {
             map.entry(reading.hiragana.clone())
                 .or_default()
                 .push(entry.clone());
@@ -28,10 +21,10 @@ pub fn dict(file: &Path, no_cache: bool) -> HashMap<String, Vec<Rc<Entry>>> {
     map
 }
 
-fn entries(file: &Path, no_cache: bool) -> Vec<Entry> {
-    let reader = dfile(file, no_cache);
+fn entries(file: &Path) -> Vec<DictEntry> {
+    let reader = open_reader(file);
 
-    let mut entries: Vec<Entry> = Vec::new();
+    let mut entries = Vec::new();
     for line in reader.lines() {
         let line = line.unwrap_or_else(|e| panic!("Invalid byte read in dfile:\n{e}"));
 
@@ -42,21 +35,4 @@ fn entries(file: &Path, no_cache: bool) -> Vec<Entry> {
     }
 
     entries
-}
-
-fn dfile(path: &Path, no_cache: bool) -> BufReader<File> {
-    // Download if missing or explicitly requested
-    if !path.exists() || no_cache {
-        download_dict(path)
-            .unwrap_or_else(|e| panic!("Failed to download dfile to {}\n{e}", path.display()));
-    }
-
-    open_reader(path)
-}
-
-fn download_dict(destination: &Path) -> Result<(), Box<dyn Error>> {
-    const URL: &str = "https://gitlab.com/jgrind/jmdict/-/raw/main/jmdict.jsonl?ref_type=heads";
-    let content = req::get(URL)?.bytes()?;
-    fs::write(destination, content)?;
-    Ok(())
 }

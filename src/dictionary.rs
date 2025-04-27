@@ -1,7 +1,7 @@
 use serde::{Deserialize, Deserializer, Serialize, de};
 
 #[derive(Debug, Deserialize, Serialize)]
-pub struct Entry {
+pub struct DictEntry {
     #[serde(alias = "ent_seq")]
     pub id: u32,
 
@@ -14,10 +14,44 @@ pub struct Entry {
     pub sense: Vec<Sense>,
 }
 
+impl DictEntry {
+    pub fn is_annotated(&self) -> bool {
+        self.kanjis.iter().any(|k| k.level != NLevel::Unknown)
+            || self.readings.iter().any(|r| r.level != NLevel::Unknown)
+    }
+
+    pub fn set_level(&mut self, hiragana: &str, level: NLevel) {
+        let Some(reading) = self.readings.iter_mut().find(|h| h.hiragana == hiragana) else {
+            return;
+        };
+
+        reading.level = level;
+
+        // Set all Kanjis to the same JLPT level unless
+        // this hiragana has a specific relevant_to list
+        if reading.relevant_to.is_empty() {
+            for kanji in self.kanjis.iter_mut() {
+                kanji.level = level;
+            }
+        } else {
+            for kanji in self
+                .kanjis
+                .iter_mut()
+                .filter(|k| reading.relevant_to.contains(&k.kanji))
+            {
+                kanji.level = level;
+            }
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Kanji {
     #[serde(rename = "keb")]
     pub kanji: String,
+
+    #[serde(default)]
+    pub level: NLevel,
 
     #[serde(rename = "ke_inf", default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<KTag>,
@@ -31,8 +65,21 @@ pub struct Reading {
     #[serde(rename = "re_restr", default, skip_serializing_if = "Vec::is_empty")]
     pub relevant_to: Vec<String>,
 
+    #[serde(default)]
+    pub level: NLevel,
+
     #[serde(rename = "re_inf", default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<RTag>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Default, PartialEq, Clone, Copy)]
+pub enum NLevel {
+    #[default]
+    Unknown,
+    One,
+    Two,
+    Three,
+    Four,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
