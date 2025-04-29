@@ -1,5 +1,9 @@
 use serde::{Deserialize, Deserializer, Serialize, de};
 
+/// An entry in the JMDict dictionary
+/// 
+/// # See also
+/// <https://en.wikipedia.org/wiki/JMdict>
 #[derive(Debug, Deserialize, Serialize)]
 pub struct DictEntry {
     #[serde(alias = "ent_seq")]
@@ -15,43 +19,60 @@ pub struct DictEntry {
 }
 
 impl DictEntry {
+    /// Determines whether there is any [reading](`DictEntry::readings`)
+    /// or [kanji](`DictEntry::kanjis`) annotated with at least one [`NLevel`]
     pub fn is_annotated(&self) -> bool {
-        self.kanjis.iter().any(|k| k.level != NLevel::Unknown)
-            || self.readings.iter().any(|r| r.level != NLevel::Unknown)
+        self.kanjis.iter().any(|kanji| !kanji.levels.is_empty())
+            || self
+                .readings
+                .iter()
+                .any(|reading| !reading.levels.is_empty())
     }
 
-    pub fn set_level(&mut self, hiragana: &str, level: NLevel) {
-        let Some(reading) = self.readings.iter_mut().find(|h| h.hiragana == hiragana) else {
+    /// Annotates a [reading](`DictEntry::readings`) that matches `hiragana`
+    /// with `level`. Annotates all [kanjis](`DictEntry::kanjis`) with the
+    /// same `level` or only the ones in [relevant_to](`Reading::relevant_to`) if that
+    /// list isn't empty.
+    pub fn add_level(&mut self, hiragana: &str, level: NLevel) {
+        let Some(reading) = self.readings.iter_mut().find(|h| h.text == hiragana) else {
             return;
         };
 
-        reading.level = level;
-
-        // Set all Kanjis to the same JLPT level unless
-        // this hiragana has a specific relevant_to list
-        if reading.relevant_to.is_empty() {
-            for kanji in self.kanjis.iter_mut() {
-                kanji.level = level;
-            }
-        } else {
-            for kanji in self
-                .kanjis
-                .iter_mut()
-                .filter(|k| reading.relevant_to.contains(&k.kanji))
-            {
-                kanji.level = level;
-            }
+        if reading.levels.contains(&level) {
+            return;
         }
+
+        reading.levels.push(level);
+
+        // Set all Kanjis to the same JLPT level.
+        // If this hiragana has a specific relevant_to list,
+        // set only those kanjis instead.
+        for kanji in self.kanjis.iter_mut().filter(|kanji| {
+            if reading.relevant_to.is_empty() {
+                !kanji.levels.contains(&level)
+            } else {
+                !kanji.levels.contains(&level) && reading.relevant_to.contains(&kanji.text)
+            }
+        }) {
+            kanji.levels.push(level);
+        }
+    }
+
+    /// Removes any [kanjis](`DictEntry::kanjis`) and/or [readings](`DictEntry::readings`)
+    /// that aren't annotated with at least one [`NLevel`].
+    pub fn trim(&mut self) {
+        self.readings.retain(|r| !r.levels.is_empty());
+        self.kanjis.retain(|k| !k.levels.is_empty());
     }
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Kanji {
     #[serde(rename = "keb")]
-    pub kanji: String,
+    pub text: String,
 
-    #[serde(default)]
-    pub level: NLevel,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub levels: Vec<NLevel>,
 
     #[serde(rename = "ke_inf", default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<KTag>,
@@ -60,26 +81,35 @@ pub struct Kanji {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Reading {
     #[serde(rename = "reb")]
-    pub hiragana: String,
+    pub text: String,
 
     #[serde(rename = "re_restr", default, skip_serializing_if = "Vec::is_empty")]
     pub relevant_to: Vec<String>,
 
-    #[serde(default)]
-    pub level: NLevel,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub levels: Vec<NLevel>,
 
     #[serde(rename = "re_inf", default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<RTag>,
 }
 
-#[derive(Debug, Deserialize, Serialize, Default, PartialEq, Clone, Copy)]
+#[derive(Debug, Deserialize, Serialize, PartialEq, Clone, Copy)]
 pub enum NLevel {
-    #[default]
-    Unknown,
     One,
     Two,
     Three,
     Four,
+}
+
+impl From<NLevel> for i32 {
+    fn from(value: NLevel) -> Self {
+        match value {
+            NLevel::One => 1,
+            NLevel::Two => 2,
+            NLevel::Three => 3,
+            NLevel::Four => 4,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize)]

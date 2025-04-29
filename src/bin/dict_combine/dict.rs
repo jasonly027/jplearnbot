@@ -2,6 +2,10 @@ use std::{cell::RefCell, collections::HashMap, io::BufRead, path::Path, rc::Rc};
 
 use jplearnbot::{dictionary::DictEntry, open_reader};
 
+/// Gets a dictionary where a key is hiragana and a value
+/// is a list of [`DictEntry`]'s that contain that hiragana.
+/// [NLevel](`jplearnbot::dictionary::NLevel`) of kanjis and 
+/// readings aren't annotated.
 pub fn dict(file: &Path) -> HashMap<String, Vec<Rc<RefCell<DictEntry>>>> {
     let entries: Vec<_> = entries(file)
         .into_iter()
@@ -12,7 +16,7 @@ pub fn dict(file: &Path) -> HashMap<String, Vec<Rc<RefCell<DictEntry>>>> {
     let mut map: HashMap<String, Vec<_>> = HashMap::new();
     for entry in entries {
         for reading in &entry.borrow().readings {
-            map.entry(reading.hiragana.clone())
+            map.entry(reading.text.clone())
                 .or_default()
                 .push(entry.clone());
         }

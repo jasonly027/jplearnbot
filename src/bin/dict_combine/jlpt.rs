@@ -2,43 +2,14 @@ use std::{io::BufRead, path::Path};
 
 use jplearnbot::{dictionary::NLevel, open_reader};
 
-#[derive(Debug, PartialEq, Clone, Copy)]
-pub enum JlptNLevel {
-    One,
-    Two,
-    Three,
-    Four,
-}
-
-impl From<JlptNLevel> for NLevel {
-    fn from(value: JlptNLevel) -> Self {
-        match value {
-            JlptNLevel::One => NLevel::One,
-            JlptNLevel::Two => NLevel::Two,
-            JlptNLevel::Three => NLevel::Three,
-            JlptNLevel::Four => NLevel::Four,
-        }
-    }
-}
-
-impl From<JlptNLevel> for i32 {
-    fn from(value: JlptNLevel) -> Self {
-        match value {
-            JlptNLevel::One => 1,
-            JlptNLevel::Two => 2,
-            JlptNLevel::Three => 3,
-            JlptNLevel::Four => 4,
-        }
-    }
-}
-
 pub struct JlptEntry {
     pub hiragana: String,
     pub kanji: Option<String>,
-    pub level: JlptNLevel,
+    pub level: NLevel,
 }
 
-pub fn pool(dir: &Path, level: JlptNLevel) -> Vec<JlptEntry> {
+/// Gets JLPT entries at `level`.
+pub fn pool(dir: &Path, level: NLevel) -> Vec<JlptEntry> {
     let mut entries = Vec::new();
 
     let path = dir.join(format!("jlpt-voc-{}.utf.txt", i32::from(level)));

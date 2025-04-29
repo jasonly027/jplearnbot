@@ -7,11 +7,11 @@ use std::{
     rc::Rc,
 };
 
-use jplearnbot::dictionary::DictEntry;
+use jplearnbot::dictionary::{DictEntry, NLevel};
 
 use crate::{
     dict,
-    jlpt::{self, JlptEntry, JlptNLevel},
+    jlpt::{self, JlptEntry},
 };
 
 pub fn run(dir: &Path, overwrite: bool) {
@@ -36,27 +36,28 @@ fn dict_entries(dir: &Path) -> Vec<Rc<RefCell<DictEntry>>> {
     let mut set: HashMap<u32, _> = HashMap::new();
     for entries in dict.into_values() {
         for entry in entries {
-            if entry.borrow().is_annotated() {
-                let id = entry.borrow().id;
-                set.insert(id, entry);
+            if !entry.borrow().is_annotated() {
+                continue;
             }
+
+            entry.borrow_mut().trim();
+
+            let id = entry.borrow().id;
+            set.insert(id, entry);
         }
     }
 
     set.into_values().collect()
 }
 
+/// Gets a dictionary where a key is hiragana and a value
+/// is a list of [`DictEntry`]'s that contain that hiragana.
 fn annotated_dict(dir: &Path) -> HashMap<String, Vec<Rc<RefCell<DictEntry>>>> {
     let dict = dict::dict(&dir.join("jmdict.jsonl"));
 
-    for pool in [
-        JlptNLevel::One,
-        JlptNLevel::Two,
-        JlptNLevel::Three,
-        JlptNLevel::Four,
-    ]
-    .into_iter()
-    .map(|lvl| jlpt::pool(dir, lvl))
+    for pool in [NLevel::One, NLevel::Two, NLevel::Three, NLevel::Four]
+        .into_iter()
+        .map(|lvl| jlpt::pool(dir, lvl))
     {
         for JlptEntry {
             hiragana,
@@ -70,7 +71,7 @@ fn annotated_dict(dir: &Path) -> HashMap<String, Vec<Rc<RefCell<DictEntry>>>> {
 
             // No definition ambiguity, mutate the exact match
             if matches.len() == 1 {
-                matches[0].borrow_mut().set_level(hiragana, (*level).into());
+                matches[0].borrow_mut().add_level(hiragana, *level);
                 continue;
             }
 
@@ -78,11 +79,11 @@ fn annotated_dict(dir: &Path) -> HashMap<String, Vec<Rc<RefCell<DictEntry>>>> {
             if let Some(kanji) = kanji {
                 let matches: Vec<_> = matches
                     .iter()
-                    .filter(|m| m.borrow().kanjis.iter().any(|k| k.kanji == *kanji))
+                    .filter(|m| m.borrow().kanjis.iter().any(|k| k.text == *kanji))
                     .collect();
 
                 if matches.len() == 1 {
-                    matches[0].borrow_mut().set_level(hiragana, (*level).into());
+                    matches[0].borrow_mut().add_level(hiragana, *level);
                 }
 
                 continue;
@@ -95,7 +96,7 @@ fn annotated_dict(dir: &Path) -> HashMap<String, Vec<Rc<RefCell<DictEntry>>>> {
                 .collect();
 
             if matches.len() == 1 {
-                matches[0].borrow_mut().set_level(hiragana, (*level).into());
+                matches[0].borrow_mut().add_level(hiragana, *level);
             }
         }
     }
@@ -103,14 +104,17 @@ fn annotated_dict(dir: &Path) -> HashMap<String, Vec<Rc<RefCell<DictEntry>>>> {
     dict
 }
 
+/// Open output file for writing
 fn writer(dir: &Path, overwrite: bool) -> BufWriter<File> {
+    let path = dir.join("dictionary.jsonl");
+
     let file = OpenOptions::new()
         .write(true)
         .create_new(!overwrite)
         .create(overwrite)
         .truncate(overwrite)
-        .open(dir.join("dictionary.jsonl"))
-        .unwrap_or_else(|e| panic!("Error writing output:\n{e}"));
+        .open(&path)
+        .unwrap_or_else(|e| panic!("Error writing output to {}:\n{e}", path.display()));
 
     BufWriter::new(file)
 }

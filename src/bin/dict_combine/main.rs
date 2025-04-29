@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use clap::Parser;
 
 mod dict;
-mod dict_combine;
 mod jlpt;
+mod dict_combine;
 
 #[derive(Parser)]
 #[command()]
