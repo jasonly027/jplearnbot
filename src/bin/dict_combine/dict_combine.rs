@@ -10,7 +10,7 @@ use std::{
 use jplearnbot::dictionary::{DictEntry, NLevel};
 
 use crate::{
-    dict,
+    dictionary,
     jlpt::{self, JlptEntry},
 };
 
@@ -53,9 +53,9 @@ fn dict_entries(dir: &Path) -> Vec<Rc<RefCell<DictEntry>>> {
 /// Gets a dictionary where a key is hiragana and a value
 /// is a list of [`DictEntry`]'s that contain that hiragana.
 fn annotated_dict(dir: &Path) -> HashMap<String, Vec<Rc<RefCell<DictEntry>>>> {
-    let dict = dict::dict(&dir.join("jmdict.jsonl"));
+    let dict = dictionary::dict(&dir.join("jmdict.jsonl"));
 
-    for pool in [NLevel::One, NLevel::Two, NLevel::Three, NLevel::Four]
+    for pool in [NLevel::N1, NLevel::N2, NLevel::N3, NLevel::N4]
         .into_iter()
         .map(|lvl| jlpt::pool(dir, lvl))
     {

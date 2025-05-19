@@ -1,2 +1,4 @@
 /target
 /content
+.vscode/
+.env

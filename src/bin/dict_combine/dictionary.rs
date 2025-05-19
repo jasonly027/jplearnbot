@@ -4,7 +4,7 @@ use jplearnbot::{dictionary::DictEntry, open_reader};
 
 /// Gets a dictionary where a key is hiragana and a value
 /// is a list of [`DictEntry`]'s that contain that hiragana.
-/// [NLevel](`jplearnbot::dictionary::NLevel`) of kanjis and 
+/// [NLevel](`jplearnbot::dictionary::NLevel`) of kanjis and
 /// readings aren't annotated.
 pub fn dict(file: &Path) -> HashMap<String, Vec<Rc<RefCell<DictEntry>>>> {
     let entries: Vec<_> = entries(file)
@@ -25,6 +25,7 @@ pub fn dict(file: &Path) -> HashMap<String, Vec<Rc<RefCell<DictEntry>>>> {
     map
 }
 
+/// Parses each line of a file into [`DictEntry`]'s
 fn entries(file: &Path) -> Vec<DictEntry> {
     let reader = open_reader(file);
 

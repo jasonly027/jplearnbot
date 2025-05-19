@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 
-mod dict;
+mod dictionary;
 mod jlpt;
 mod dict_combine;
 

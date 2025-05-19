@@ -1,7 +1,8 @@
 use serde::{Deserialize, Deserializer, Serialize, de};
+use strum_macros::{EnumIter, EnumString};
 
 /// An entry in the JMDict dictionary
-/// 
+///
 /// # See also
 /// <https://en.wikipedia.org/wiki/JMdict>
 #[derive(Debug, Deserialize, Serialize)]
@@ -93,21 +94,31 @@ pub struct Reading {
     pub tags: Vec<RTag>,
 }
 
-#[derive(Debug, Deserialize, Serialize, PartialEq, Clone, Copy)]
+#[derive(
+    Debug,
+    Deserialize,
+    Serialize,
+    PartialEq,
+    Clone,
+    Copy,
+    strum_macros::Display,
+    EnumIter,
+    EnumString,
+)]
 pub enum NLevel {
-    One,
-    Two,
-    Three,
-    Four,
+    N1,
+    N2,
+    N3,
+    N4,
 }
 
 impl From<NLevel> for i32 {
     fn from(value: NLevel) -> Self {
         match value {
-            NLevel::One => 1,
-            NLevel::Two => 2,
-            NLevel::Three => 3,
-            NLevel::Four => 4,
+            NLevel::N1 => 1,
+            NLevel::N2 => 2,
+            NLevel::N3 => 3,
+            NLevel::N4 => 4,
         }
     }
 }
