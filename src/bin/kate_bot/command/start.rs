@@ -1,26 +1,13 @@
 use std::time::Duration;
 
-use crate::{Context, Error};
-use jplearnbot::dictionary::NLevel;
+use crate::{Context, Error, game::ModeChoice};
+use jplearnbot::dictionary::{NLevel, Pos};
 use poise::serenity_prelude::{
     ComponentInteractionCollector, ComponentInteractionDataKind, CreateActionRow, CreateButton,
-    CreateInteractionResponse, CreateInteractionResponseMessage, CreateMessage, CreateSelectMenu,
-    CreateSelectMenuKind, CreateSelectMenuOption, futures::StreamExt,
+    CreateInteractionResponse, CreateInteractionResponseMessage, CreateSelectMenu,
+    CreateSelectMenuKind, CreateSelectMenuOption, EditInteractionResponse, futures::StreamExt,
 };
 use strum::IntoEnumIterator;
-use tokio::time::sleep;
-
-#[derive(Debug, poise::ChoiceParameter)]
-enum ModeChoice {
-    #[name = "English ▶ ひらがな"]
-    EngToHir,
-    #[name = "ひらがな ▶ English"]
-    HirToEng,
-    #[name = "ひらがな ▶ 漢字"]
-    HirToKan,
-    #[name = "漢字 ▶ ひらがな"]
-    KanToHir,
-}
 
 /// Starts a new game
 #[poise::command(slash_command, user_cooldown = 3)]
@@ -28,7 +15,7 @@ pub async fn start(
     ctx: Context<'_>,
     #[description = "Game mode"] mode: ModeChoice,
 ) -> Result<(), Error> {
-    let mut menu = FiltersMenu::new(ctx.id(), mode);
+    let mut menu = FiltersMenu::new(&ctx, ctx.id(), mode);
 
     ctx.send(
         poise::CreateReply::default()
@@ -37,17 +24,18 @@ pub async fn start(
     )
     .await?;
 
-    menu.handle_interactions(&ctx).await?;
+    menu.handle_interactions().await?;
 
     Ok(())
 }
 
 /// Manages the components of the create game form.
-struct FiltersMenu {
+struct FiltersMenu<'a> {
+    ctx: &'a Context<'a>,
     /// Identifier for the NLevel filter menu.
     nlvls_id: String,
     /// Currently selected NLevels. Initially all of them.
-    nlvls: Vec<NLevel>,
+    levels: Vec<NLevel>,
 
     /// Identifier for the parts of speech filter menu.
     pos_id: String,
@@ -61,12 +49,13 @@ struct FiltersMenu {
     mode: ModeChoice,
 }
 
-impl FiltersMenu {
-    fn new(invocation_id: u64, mode: ModeChoice) -> Self {
+impl<'a> FiltersMenu<'a> {
+    fn new(ctx: &'a Context<'_>, invocation_id: u64, mode: ModeChoice) -> Self {
         let id = invocation_id.to_string();
         FiltersMenu {
+            ctx,
             nlvls_id: format!("{}-nlvls", id),
-            nlvls: NLevel::iter().collect(),
+            levels: NLevel::iter().collect(),
 
             pos_id: format!("{}-pos", id),
             pos: vec![
@@ -83,28 +72,28 @@ impl FiltersMenu {
 
     /// Create all of the components of this menu.
     fn create_components(&self) -> Vec<CreateActionRow> {
-        vec![self.nlvls_menu(), self.pos_menu(), self.submit_button()]
+        vec![self.levels_menu(), self.pos_menu(), self.submit_button()]
     }
 
     /// Creates a new menu for selecting NLevels. Used by [`Self::create_components`].
-    fn nlvls_menu(&self) -> CreateActionRow {
-        let nlvls = self
-            .nlvls
+    fn levels_menu(&self) -> CreateActionRow {
+        let levels = self
+            .levels
             .iter()
             .map(|lvl| {
                 CreateSelectMenuOption::new(lvl.to_string(), lvl.to_string())
                     .default_selection(true)
             })
             .collect::<Vec<_>>();
-        let nlvls_len = nlvls.len();
+        let levels_len = levels.len();
 
         let menu = CreateSelectMenu::new(
             &self.nlvls_id,
-            CreateSelectMenuKind::String { options: nlvls },
+            CreateSelectMenuKind::String { options: levels },
         )
         .placeholder("Select NLevel Pool(s)")
         .min_values(1)
-        .max_values(nlvls_len.try_into().expect("Too many options were added"));
+        .max_values(levels_len.try_into().expect("Too many options were added"));
 
         CreateActionRow::SelectMenu(menu)
     }
@@ -135,12 +124,12 @@ impl FiltersMenu {
 
     /// Listens for form interactions. Starts a game on submission. Does nothing
     /// on subsequent submissions.
-    async fn handle_interactions(&mut self, ctx: &Context<'_>) -> Result<(), Error> {
+    async fn handle_interactions(&mut self) -> Result<(), Error> {
         let mut submitted = false;
 
-        let mut collector = ComponentInteractionCollector::new(ctx)
-            .author_id(ctx.author().id)
-            .channel_id(ctx.channel_id())
+        let mut collector = ComponentInteractionCollector::new(self.ctx)
+            .author_id(self.ctx.author().id)
+            .channel_id(self.ctx.channel_id())
             .timeout(Duration::from_secs(20))
             .filter({
                 // Only listen for this form's components.
@@ -149,7 +138,7 @@ impl FiltersMenu {
                     self.pos_id.clone(),
                     self.submit_id.clone(),
                 ];
-                move |mci| ids.contains(&mci.data.custom_id)
+                move |ci| ids.contains(&ci.data.custom_id)
             })
             .stream();
 
@@ -164,11 +153,11 @@ impl FiltersMenu {
                     }
 
                     if id == &self.nlvls_id {
-                        self.nlvls = values.iter().map(|v| v.parse().unwrap()).collect();
+                        self.levels = values.iter().map(|v| v.parse().unwrap()).collect();
                     } else if id == &self.pos_id {
                         self.pos = values.iter().map(|v| v.parse().unwrap()).collect();
                     }
-                    ci.create_response(ctx, CreateInteractionResponse::Acknowledge)
+                    ci.create_response(self.ctx, CreateInteractionResponse::Acknowledge)
                         .await?;
                 }
                 // Handle submit
@@ -180,7 +169,7 @@ impl FiltersMenu {
                     // Ignore subsequent submissions
                     if submitted {
                         ci.create_response(
-                            ctx,
+                            self.ctx,
                             CreateInteractionResponse::Message(
                                 CreateInteractionResponseMessage::new()
                                     .content("Game has already been created")
@@ -192,20 +181,34 @@ impl FiltersMenu {
                     }
                     submitted = true;
 
-                    /// TODO: Find out what this reply looks like to an ephmereal create game form
                     ci.create_response(
-                        ctx,
-                        CreateInteractionResponse::Defer(CreateInteractionResponseMessage::new()),
+                        self.ctx,
+                        CreateInteractionResponse::Message(
+                            CreateInteractionResponseMessage::new()
+                                .content("Creating game...")
+                                .ephemeral(true),
+                        ),
                     )
                     .await?;
 
-                    sleep(Duration::from_secs(3)).await;
-
-                    ci.delete_response(ctx).await?;
-
-                    ci.channel_id
-                        .send_message(ctx, CreateMessage::new().content("unsolicited"))
+                    // Try start game
+                    if self
+                        .ctx
+                        .data()
+                        .manager
+                        .start_game(self.ctx, self.mode, self.levels.clone(), vec![Pos::N])
+                        .is_err()
+                    {
+                        ci.edit_response(
+                            self.ctx,
+                            EditInteractionResponse::new().content(
+                                "You've already started a game. Please stop it to start a new one.",
+                            ),
+                        )
                         .await?;
+                    } else {
+                        ci.delete_response(self.ctx).await?;
+                    }
                 }
                 _ => {}
             }

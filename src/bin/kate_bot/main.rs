@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use dotenvy::dotenv;
 use poise::{
     Framework,
@@ -5,8 +7,12 @@ use poise::{
 };
 
 mod command;
+mod dictionary;
+mod game;
 
-pub struct Data {}
+pub struct Data {
+    pub manager: Arc<game::Manager>,
+}
 pub type Context<'a> = poise::Context<'a, Data, Error>;
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 
@@ -19,7 +25,10 @@ async fn main() {
 
     let framework: Framework<Data, Error> = poise::Framework::builder()
         .options(poise::FrameworkOptions {
-            commands: vec![command::start()],
+            commands: vec![command::start(), command::stop()],
+            event_handler: |_ctx, event, framework, _data| {
+                Box::pin(event_handler(event.clone(), framework))
+            },
             ..Default::default()
         })
         .setup(|ctx, _ready, framework| {
@@ -30,7 +39,9 @@ async fn main() {
                     GuildId::new(1148122592293699584),
                 )
                 .await?;
-                Ok(Data {})
+                Ok(Data {
+                    manager: game::Manager::new(ctx.http.clone()).into(),
+                })
             })
         })
         .build();
@@ -40,4 +51,17 @@ async fn main() {
         .await;
 
     client.unwrap().start().await.unwrap();
+}
+
+async fn event_handler(
+    event: serenity::FullEvent,
+    framework: poise::FrameworkContext<'_, Data, Error>,
+) -> Result<(), Error> {
+    if let serenity::FullEvent::InteractionCreate { interaction } = event {
+        if let Some(interaction) = interaction.into_message_component() {
+            framework.user_data.manager.send(interaction).await;
+        };
+    };
+
+    Ok(())
 }
