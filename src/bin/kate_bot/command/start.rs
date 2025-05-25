@@ -130,7 +130,7 @@ impl<'a> FiltersMenu<'a> {
         let mut collector = ComponentInteractionCollector::new(self.ctx)
             .author_id(self.ctx.author().id)
             .channel_id(self.ctx.channel_id())
-            .timeout(Duration::from_secs(20))
+            .timeout(Duration::from_secs(60))
             .filter({
                 // Only listen for this form's components.
                 let ids = [
@@ -148,7 +148,7 @@ impl<'a> FiltersMenu<'a> {
             match &ci.data.kind {
                 // Update filters
                 ComponentInteractionDataKind::StringSelect { values } => {
-                    if id != &self.nlvls_id || id != &self.pos_id {
+                    if id != &self.nlvls_id && id != &self.pos_id {
                         continue;
                     }
 

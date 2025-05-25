@@ -6,12 +6,16 @@ use std::{
 
 use const_format::formatcp;
 use dashmap::DashMap;
-use jplearnbot::dictionary::{DictEntry, NLevel, Pos};
+use jplearnbot::dictionary::{DictEntry, NLevel, Pos, Reading, Sense};
 use poise::serenity_prelude::{
     ComponentInteraction, CreateActionRow, CreateButton, CreateInteractionResponse,
     CreateInteractionResponseMessage, CreateMessage, EditMessage, UserId, http::Http,
 };
-use rand::{rng, seq::IndexedRandom};
+use rand::{
+    distr::{Bernoulli, Distribution},
+    rng,
+    seq::{IndexedRandom, SliceRandom},
+};
 use regex::Regex;
 use tokio::{
     sync::mpsc::{self, Receiver, Sender},
@@ -21,6 +25,7 @@ use uuid::Uuid;
 
 use crate::{Context, dictionary::Dictionary};
 
+/// Game modes
 #[derive(Debug, poise::ChoiceParameter, Clone, Copy)]
 pub enum ModeChoice {
     #[name = "English ▶ ひらがな"]
@@ -60,6 +65,15 @@ impl Manager {
         }
     }
 
+    /// Starts a new game session with the selected `mode`, `levels`, and `pos`.
+    /// A separate task is created for game interaction handling. A [`Sender`]
+    /// to the session is stored in [`Self::sessions`] for the duration of the game.
+    /// The sessions exists while there are words in the pool and user interaction
+    /// doesn't timeout from inactivity. A session can be stopped prematurely by sending
+    /// a [`GameMessage::Close`] through the sender.
+    ///
+    /// # Errors
+    /// Fails if user already has a running game.
     pub fn start_game(
         &self,
         ctx: &Context<'_>,
@@ -78,14 +92,21 @@ impl Manager {
         let sessions = Arc::clone(&self.sessions);
         let dictionary = Arc::clone(&self.dictionary);
 
+        let mut pos = pos;
+
         let (tx, mut rx) = mpsc::channel(10);
         self.sessions.insert(user_id, tx);
 
         tokio::spawn(async move {
+            // Natural expected exit reason, reason may change from interactions or lack thereof.
             let mut exit_reason = InteractionExitReason::PoolExhausted;
 
             for (round, entry) in dictionary.sample(&levels, &pos).await.iter().enumerate() {
-                let Some(question) = Question::new(entry, mode, &dictionary) else {
+                pos.shuffle(&mut rng());
+                let Some(question) = pos
+                    .iter()
+                    .find_map(|&p| Question::new(entry, mode, p, &dictionary))
+                else {
                     continue;
                 };
 
@@ -96,7 +117,10 @@ impl Manager {
                     .send_message(
                         &http,
                         CreateMessage::new()
-                            .content(format!("Round {round}\nId: {}", entry.id))
+                            .content(format!(
+                                "Round {round}\nId: {}\nPrompt: {}",
+                                entry.id, menu.prompt
+                            ))
                             .components(menu.create_components()),
                     )
                     .await
@@ -161,6 +185,7 @@ impl Manager {
     }
 }
 
+/// Reasons listening for component interactions should stop.
 enum InteractionExitReason {
     /// There are no more words left in the pool.
     PoolExhausted,
@@ -192,61 +217,253 @@ impl Display for SessionAlreadyCreated {
 
 impl std::error::Error for SessionAlreadyCreated {}
 
+/// Game question
 struct Question {
-    options: [String; 4],
+    /// The word to translate.
+    prompt: String,
+    /// Possible translations of [`Self::prompt`].
+    options: [String; 5],
+    /// The index of the correct translation of [`Self::prompt`].
     answer: usize,
 }
 
 impl Question {
-    fn new(entry: &DictEntry, mode: ModeChoice, dictionary: &Dictionary) -> Option<Self> {
-        // Some(Question {
-        //     answer: 0,
-        //     options: [
-        //         "One".to_string(),
-        //         "Two".to_string(),
-        //         "Three".to_string(),
-        //         "Four".to_string(),
-        //     ],
-        // })
+    fn new(entry: &DictEntry, mode: ModeChoice, pos: Pos, dictionary: &Dictionary) -> Option<Self> {
         match mode {
-            ModeChoice::EngToHir => Self::new_eng_to_hir(entry, dictionary),
-            ModeChoice::HirToEng => Self::new_hir_to_eng(entry, dictionary),
-            ModeChoice::HirToKan => Self::new_hir_to_kan(entry, dictionary),
-            ModeChoice::KanToHir => Self::new_kan_to_hir(entry, dictionary),
+            ModeChoice::EngToHir => Self::new_eng_to_hir(entry, pos),
+            ModeChoice::HirToEng => Self::new_hir_to_eng(entry, pos, dictionary),
+            ModeChoice::HirToKan => Self::new_hir_to_kan(entry, pos, dictionary),
+            ModeChoice::KanToHir => Self::new_kan_to_hir(entry, pos, dictionary),
         }
     }
 
-    fn new_eng_to_hir(entry: &DictEntry, dictionary: &Dictionary) -> Option<Self> {
+    fn new_eng_to_hir(entry: &DictEntry, pos: Pos) -> Option<Self> {
+        let (reading, sense) = reading_sense_pair(entry, pos)?;
+
+        let (answer, options) = create_reading_options(reading.text.clone());
+
+        Some(Question {
+            prompt: sense.gloss[0].content.clone(),
+            options,
+            answer,
+        })
+    }
+
+    fn new_hir_to_eng(entry: &DictEntry, pos: Pos, dictionary: &Dictionary) -> Option<Self> {
+        let (reading, sense) = reading_sense_pair(entry, pos)?;
+
         todo!()
     }
 
-    fn new_hir_to_eng(entry: &DictEntry, dictionary: &Dictionary) -> Option<Self> {
+    fn new_hir_to_kan(entry: &DictEntry, pos: Pos, dictionary: &Dictionary) -> Option<Self> {
         todo!()
     }
 
-    fn new_hir_to_kan(entry: &DictEntry, dictionary: &Dictionary) -> Option<Self> {
+    fn new_kan_to_hir(entry: &DictEntry, pos: Pos, dictionary: &Dictionary) -> Option<Self> {
         todo!()
     }
 
-    fn new_kan_to_hir(entry: &DictEntry, dictionary: &Dictionary) -> Option<Self> {
-        todo!()
-    }
-
+    /// Convenience getter for the correct translation of the [`Self::prompt`].
     fn answer(&self) -> &str {
         &self.options[self.answer]
     }
 }
 
+/// Conventiently extracts a [`Reading`] and correlated [`Sense`] from a [`DictEntry`] where
+/// the sense has the `pos` tag and is guaranteed to have at least one gloss.
+///
+/// Returns [`None`] if no possible extraction.
+fn reading_sense_pair(entry: &DictEntry, pos: Pos) -> Option<(&Reading, &Sense)> {
+    let sense = entry
+        .senses
+        .iter()
+        .find(|s| s.pos.contains(&pos) && !s.gloss.is_empty())?;
+
+    let reading = entry
+        .readings
+        .iter()
+        .find(|r| sense.relevant_reading.is_empty() || sense.relevant_reading.contains(&r.text))?;
+
+    Some((reading, sense))
+}
+
+/// Creates an array containing `reading` and scrambled versions of `reading`.
+/// If it takes too many tries to create a unique scrambled version of `reading`.
+/// "OPTION" is added to the array instead.
+///
+/// Returns an index to the original `reading` and the array.
+fn create_reading_options(reading: String) -> (usize, [String; 5]) {
+    let mut res = std::array::from_fn(|_| "".to_string());
+    res[0] = reading.clone();
+
+    'outer: for i in 1..res.len() {
+        const MAX_SCRAMBLE_TRIES: i32 = 1000;
+
+        for _ in 0..MAX_SCRAMBLE_TRIES {
+            let scrambled = scrambled(&reading);
+            if !res.contains(&scrambled) {
+                res[i] = scrambled;
+                continue 'outer;
+            }
+        }
+
+        res[i] = "OPTION".to_string();
+    }
+    res.shuffle(&mut rng());
+
+    let original_idx = res.iter().position(|r| reading == *r).unwrap();
+
+    (original_idx, res)
+}
+
+/// Scrambles the hiragana or katakana of `reading`.
+fn scrambled(reading: &str) -> String {
+    let mut rng = rng();
+    let bern = Bernoulli::new(0.5).unwrap();
+    let always_swap = reading.chars().count() < 4 || reading::swappable_ratio(reading) < 0.6;
+
+    reading
+        .chars()
+        .map(|c| {
+            if let Some(pool) = reading::swap_pool(c) {
+                if always_swap || bern.sample(&mut rng) {
+                    return *pool.choose(&mut rng).unwrap_or(&c);
+                }
+            }
+            c
+        })
+        .collect()
+}
+
+mod reading {
+    use std::ops::Deref;
+
+    struct Chart([[char; 5]; 8]);
+
+    impl Deref for Chart {
+        type Target = [[char; 5]; 8];
+        fn deref(&self) -> &Self::Target {
+            &self.0
+        }
+    }
+
+    const HIRA_CHART: Chart = Chart([
+        ['あ', 'い', 'う', 'え', 'お'],
+        ['か', 'き', 'く', 'け', 'こ'],
+        ['さ', 'し', 'す', 'せ', 'そ'],
+        ['た', 'ち', 'つ', 'て', 'と'],
+        ['な', 'に', 'ぬ', 'ね', 'の'],
+        ['は', 'ひ', 'ふ', 'へ', 'ほ'],
+        ['ま', 'み', 'む', 'め', 'も'],
+        ['ら', 'り', 'る', 'れ', 'ろ'],
+    ]);
+    const HIRA_WA_COL: [char; 10] = ['わ', 'あ', 'か', 'さ', 'た', 'な', 'は', 'ま', 'や', 'ら'];
+    const HIRA_Y_ROW: [char; 3] = ['や', 'ゆ', 'よ'];
+
+    const KATA_CHART: Chart = Chart([
+        ['ア', 'イ', 'ウ', 'エ', 'オ'],
+        ['カ', 'キ', 'ク', 'ケ', 'コ'],
+        ['サ', 'シ', 'ス', 'セ', 'ソ'],
+        ['タ', 'チ', 'ツ', 'テ', 'ト'],
+        ['ナ', 'ニ', 'ヌ', 'ネ', 'ノ'],
+        ['ハ', 'ヒ', 'フ', 'ヘ', 'ホ'],
+        ['マ', 'ミ', 'ム', 'メ', 'モ'],
+        ['ラ', 'リ', 'ル', 'レ', 'ロ'],
+    ]);
+    const KATA_WA_COL: [char; 10] = ['ワ', 'ア', 'カ', 'サ', 'タ', 'ナ', 'ハ', 'マ', 'ヤ', 'ラ'];
+    const KATA_Y_ROW: [char; 3] = ['ヤ', 'ユ', 'ヨ'];
+
+    /// Finds possible Hiragana or Katakana that can replace `char` in a scramble.
+    pub fn swap_pool(char: char) -> Option<Vec<char>> {
+        if let Some(pool) = chart_swap_pool(char, &HIRA_CHART) {
+            return Some(pool);
+        }
+        if char == HIRA_WA_COL[0] {
+            return Some(HIRA_WA_COL[1..].to_vec());
+        }
+        if HIRA_Y_ROW.contains(&char) {
+            return Some(HIRA_Y_ROW.iter().cloned().filter(|&h| h != char).collect());
+        }
+
+        if let Some(pool) = chart_swap_pool(char, &KATA_CHART) {
+            return Some(pool);
+        }
+        if char == KATA_WA_COL[0] {
+            return Some(KATA_WA_COL[1..].to_vec());
+        }
+        if KATA_Y_ROW.contains(&char) {
+            return Some(KATA_Y_ROW.iter().cloned().filter(|&h| h != char).collect());
+        }
+
+        None
+    }
+
+    /// Finds possible Hiragana or Katakana that can replace `char` in a scramble
+    /// in `chart`.
+    fn chart_swap_pool(char: char, chart: &Chart) -> Option<Vec<char>> {
+        let (row_idx, col_idx) = find_chart_coords(char, chart)?;
+
+        let mut neighbors: Vec<char> = chart[row_idx]
+            .iter()
+            .cloned()
+            .filter(|c| *c != char)
+            .collect();
+
+        for row in chart.iter() {
+            if row[col_idx] != char {
+                neighbors.push(row[col_idx]);
+            }
+        }
+
+        Some(neighbors)
+    }
+
+    /// Finds the position of `char` in `chart` if it's in the chart.
+    fn find_chart_coords(char: char, chart: &Chart) -> Option<(usize, usize)> {
+        for (row_idx, row) in chart.iter().enumerate() {
+            for (col_idx, col) in row.iter().enumerate() {
+                if char == *col {
+                    return Some((row_idx, col_idx));
+                }
+            }
+        }
+        None
+    }
+
+    /// Determines how many characters in `s` can be scrambled.
+    pub fn swappable_ratio(s: &str) -> f64 {
+        if s.is_empty() {
+            return 0.0;
+        }
+
+        let (mut swappable, mut total) = (0, 0);
+        for char in s.chars() {
+            if swap_pool(char).is_some() {
+                swappable += 1;
+            }
+            total += 1;
+        }
+
+        (swappable as f64) / (total as f64)
+    }
+}
+
+/// Manages the components of a game question.
 struct Menu<'a> {
     id: String,
+    prompt: String,
     questions: Vec<QuestionComponent>,
     answer: usize,
     http: &'a Http,
 }
 
+/// Contains data on a game button.
 struct QuestionComponent {
+    /// The component's unique identifier.
     id: String,
+    /// Possible translation text.
     text: String,
+    /// Whether this button should be disabled.
     disabled: bool,
 }
 
@@ -265,6 +482,7 @@ impl<'a> Menu<'a> {
 
         Menu {
             id,
+            prompt: question.prompt,
             questions,
             answer: question.answer,
             http,
@@ -366,7 +584,7 @@ async fn component_interaction(
 
 /// Parses a component's custom_id for its menu_id and the user's button choice.
 fn parse_custom_id(custom_id: &str) -> Option<(&str, usize)> {
-    static RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(.*),([0-3])$").unwrap());
+    static RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(.*),([0-4])$").unwrap());
 
     RE.captures(custom_id)
         .and_then(|m| Some((m.get(1)?, m.get(2)?))) // Get capture groups

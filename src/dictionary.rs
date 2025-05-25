@@ -199,6 +199,8 @@ macro_rules! pos_enum {
             serde::Deserialize,
             serde::Serialize,
             PartialEq,
+            Clone,
+            Copy,
             Eq,
             strum_macros::EnumMessage,
         )]
