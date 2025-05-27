@@ -1,6 +1,9 @@
 use std::time::Duration;
 
-use crate::{Context, Error, game::ModeChoice};
+use crate::{
+    Context, Error,
+    game::{ModeChoice, PosFilter},
+};
 use jplearnbot::dictionary::{NLevel, Pos};
 use poise::serenity_prelude::{
     ComponentInteractionCollector, ComponentInteractionDataKind, CreateActionRow, CreateButton,
@@ -10,10 +13,18 @@ use poise::serenity_prelude::{
 use strum::IntoEnumIterator;
 
 /// Starts a new game
-#[poise::command(slash_command, user_cooldown = 3)]
+#[poise::command(
+    slash_command,
+    user_cooldown = 3,
+    name_localized("ja", "スタート"),
+    description_localized("ja", "ゲームを始める")
+)]
 pub async fn start(
     ctx: Context<'_>,
-    #[description = "Game mode"] mode: ModeChoice,
+    #[name_localized("ja", "モード")]
+    #[description = "Pick a game mode"]
+    #[description_localized("ja", "ゲームのモードを選んでください")]
+    mode: ModeChoice,
 ) -> Result<(), Error> {
     let mut menu = FiltersMenu::new(&ctx, ctx.id(), mode);
 
@@ -40,7 +51,7 @@ struct FiltersMenu<'a> {
     /// Identifier for the parts of speech filter menu.
     pos_id: String,
     /// Currently selected parts of speech. Initially all of them.
-    pos: Vec<String>,
+    pos: Vec<PosFilter>,
 
     /// Identifier for the submit button.
     submit_id: String,
@@ -58,11 +69,7 @@ impl<'a> FiltersMenu<'a> {
             levels: NLevel::iter().collect(),
 
             pos_id: format!("{}-pos", id),
-            pos: vec![
-                "Nouns".to_string(),
-                "Verbs".to_string(),
-                "Prenominals".to_string(),
-            ],
+            pos: PosFilter::iter().collect(),
 
             submit_id: format!("{}-submit", id),
 
@@ -103,7 +110,9 @@ impl<'a> FiltersMenu<'a> {
         let pos = self
             .pos
             .iter()
-            .map(|p| CreateSelectMenuOption::new(p, p).default_selection(true))
+            .map(|p| {
+                CreateSelectMenuOption::new(p.to_string(), p.to_string()).default_selection(true)
+            })
             .collect::<Vec<_>>();
         let pos_len = pos.len();
 
@@ -196,7 +205,7 @@ impl<'a> FiltersMenu<'a> {
                         .ctx
                         .data()
                         .manager
-                        .start_game(self.ctx, self.mode, self.levels.clone(), vec![Pos::N])
+                        .start_game(self.ctx, self.mode, self.levels.clone(), self.pos.clone())
                         .is_err()
                     {
                         ci.edit_response(

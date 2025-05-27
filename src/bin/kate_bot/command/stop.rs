@@ -1,7 +1,12 @@
 use crate::{Context, Error};
 
 /// Stops any game you created.
-#[poise::command(slash_command, user_cooldown = 3)]
+#[poise::command(
+    slash_command,
+    user_cooldown = 3,
+    name_localized("ja", "止まる"),
+    description_localized("ja", "ゲームを止まる")
+)]
 pub async fn stop(ctx: Context<'_>) -> Result<(), Error> {
     let stopped = ctx.data().manager.stop(ctx.author().id).await;
 
