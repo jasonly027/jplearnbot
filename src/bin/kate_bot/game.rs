@@ -6,15 +6,16 @@ use std::{
 
 use const_format::formatcp;
 use dashmap::DashMap;
-use jplearnbot::dictionary::{DictEntry, NLevel, Pos, Reading, Sense};
+use jplearnbot::dictionary::{DictEntry, Kanji, NLevel, Pos, Reading, Sense};
 use poise::serenity_prelude::{
-    ComponentInteraction, CreateActionRow, CreateButton, CreateInteractionResponse,
-    CreateInteractionResponseMessage, CreateMessage, EditMessage, UserId, http::Http,
+    ComponentInteraction, CreateActionRow, CreateButton, CreateEmbed, CreateEmbedFooter,
+    CreateInteractionResponse, CreateInteractionResponseMessage, CreateMessage, EditMessage,
+    UserId, http::Http,
 };
 use rand::{
     distr::{Bernoulli, Distribution},
     rng,
-    seq::{IndexedRandom, SliceRandom},
+    seq::{IndexedRandom, IteratorRandom, SliceRandom},
 };
 use regex::Regex;
 use tokio::{
@@ -111,7 +112,7 @@ impl Manager {
                 };
 
                 let menu_id = format!("{user_id},{}", Uuid::new_v4());
-                let mut menu = Menu::new(&http, menu_id, question);
+                let mut menu = Menu::new(&http, menu_id, question, entry);
 
                 if channel_id
                     .send_message(
@@ -233,7 +234,7 @@ impl Question {
             ModeChoice::EngToHir => Self::new_eng_to_hir(entry, pos),
             ModeChoice::HirToEng => Self::new_hir_to_eng(entry, pos, dictionary),
             ModeChoice::HirToKan => Self::new_hir_to_kan(entry, pos, dictionary),
-            ModeChoice::KanToHir => Self::new_kan_to_hir(entry, pos, dictionary),
+            ModeChoice::KanToHir => Self::new_kan_to_hir(entry, pos),
         }
     }
 
@@ -252,15 +253,83 @@ impl Question {
     fn new_hir_to_eng(entry: &DictEntry, pos: Pos, dictionary: &Dictionary) -> Option<Self> {
         let (reading, sense) = reading_sense_pair(entry, pos)?;
 
-        todo!()
+        let mut options = std::array::from_fn(|_| "".to_string());
+        options[0] = sense.gloss[0].content.clone();
+
+        dictionary
+            .entries
+            .iter()
+            .filter_map(|e| {
+                if e.id == entry.id {
+                    return None;
+                }
+
+                for sense in &e.senses {
+                    if !sense.gloss.is_empty() && sense.pos.contains(&pos) {
+                        return Some(sense.gloss[0].content.clone());
+                    }
+                }
+
+                None
+            })
+            .choose_multiple_fill(&mut rng(), &mut options[1..]);
+
+        options.shuffle(&mut rng());
+
+        let answer = options
+            .iter()
+            .position(|o| sense.gloss[0].content == *o)
+            .unwrap();
+
+        Some(Question {
+            prompt: reading.text.clone(),
+            options,
+            answer,
+        })
     }
 
     fn new_hir_to_kan(entry: &DictEntry, pos: Pos, dictionary: &Dictionary) -> Option<Self> {
-        todo!()
+        let (kanji, reading) = kanji_reading_pair(entry, pos)?;
+
+        let mut options = std::array::from_fn(|_| "".to_string());
+        options[0] = kanji.text.clone();
+        dictionary
+            .entries
+            .iter()
+            .filter_map(|e| {
+                if e.id == entry.id {
+                    return None;
+                }
+
+                if !e.senses.iter().any(|s| s.pos.contains(&pos)) {
+                    return None;
+                }
+
+                Some(e.kanjis.first()?.text.clone())
+            })
+            .choose_multiple_fill(&mut rng(), &mut options[1..]);
+
+        options.shuffle(&mut rng());
+
+        let answer = options.iter().position(|o| kanji.text == *o).unwrap();
+
+        Some(Question {
+            prompt: reading.text.clone(),
+            options,
+            answer,
+        })
     }
 
-    fn new_kan_to_hir(entry: &DictEntry, pos: Pos, dictionary: &Dictionary) -> Option<Self> {
-        todo!()
+    fn new_kan_to_hir(entry: &DictEntry, pos: Pos) -> Option<Self> {
+        let (kanji, reading) = kanji_reading_pair(entry, pos)?;
+
+        let (answer, options) = create_reading_options(reading.text.clone());
+
+        Some(Question {
+            prompt: kanji.text.clone(),
+            options,
+            answer,
+        })
     }
 
     /// Convenience getter for the correct translation of the [`Self::prompt`].
@@ -335,6 +404,19 @@ fn scrambled(reading: &str) -> String {
         .collect()
 }
 
+fn kanji_reading_pair(entry: &DictEntry, pos: Pos) -> Option<(&Kanji, &Reading)> {
+    let sense = entry.senses.iter().find(|s| s.pos.contains(&pos))?;
+
+    let kanji = entry.kanjis.first()?;
+
+    let reading = entry.readings.iter().find(|r| {
+        (r.relevant_to.is_empty() || r.relevant_to.contains(&kanji.text))
+            && (sense.relevant_reading.is_empty() || sense.relevant_reading.contains(&r.text))
+    })?;
+
+    Some((kanji, reading))
+}
+
 mod reading {
     use std::ops::Deref;
 
@@ -359,7 +441,7 @@ mod reading {
     ]);
     const HIRA_WA_COL: [char; 10] = ['わ', 'あ', 'か', 'さ', 'た', 'な', 'は', 'ま', 'や', 'ら'];
     const HIRA_Y_ROW: [char; 3] = ['や', 'ゆ', 'よ'];
-
+    
     const KATA_CHART: Chart = Chart([
         ['ア', 'イ', 'ウ', 'エ', 'オ'],
         ['カ', 'キ', 'ク', 'ケ', 'コ'],
@@ -454,6 +536,7 @@ struct Menu<'a> {
     prompt: String,
     questions: Vec<QuestionComponent>,
     answer: usize,
+    entry: &'a DictEntry,
     http: &'a Http,
 }
 
@@ -468,7 +551,7 @@ struct QuestionComponent {
 }
 
 impl<'a> Menu<'a> {
-    fn new(http: &'a Http, id: String, question: Question) -> Self {
+    fn new(http: &'a Http, id: String, question: Question, entry: &'a DictEntry) -> Self {
         let questions = question
             .options
             .into_iter()
@@ -485,11 +568,20 @@ impl<'a> Menu<'a> {
             prompt: question.prompt,
             questions,
             answer: question.answer,
+            entry,
             http,
         }
     }
 
-    /// Equivalent to [`Self::questions`][].[`id`]
+    fn levels(&self) -> Vec<NLevel> {
+        self.entry
+            .readings
+            .iter()
+            .flat_map(|r| r.levels.clone())
+            .collect()
+    }
+
+    /// Equivalent to [`Self::questions`]\[\].[`id`]
     fn answer_id(&self) -> &str {
         &self.questions[self.answer].id
     }
@@ -539,18 +631,21 @@ impl<'a> Menu<'a> {
                 .await
                 .map_err(|_| InteractionExitReason::NetworkError)?;
 
-            ci.create_response(
-                self.http,
-                CreateInteractionResponse::Message(
-                    CreateInteractionResponseMessage::new().content(if correct {
-                        format!("<:correct:1375301870200819932> correct <@{}>", ci.user.id)
-                    } else {
-                        insult_message(ci.user.id)
-                    }),
-                ),
-            )
-            .await
-            .map_err(|_| InteractionExitReason::NetworkError)?;
+            let message = if correct {
+                CreateInteractionResponseMessage::new()
+                    .embed(
+                        CreateEmbed::new()
+                            .title("Answer · 正解")
+                            .thumbnail(r"https://cdn.discordapp.com/attachments/1373332666526732359/1373337945397792788/Untitled.png?ex=6835e9a1&is=68349821&hm=0e0e29613ea5ba328b997bad120739650141649dec54f4a5dc43c35b17ff7dff&")
+                            .field(format!("{} {:?}",&self.questions[self.answer].text, self.levels()), format!("[**Definition**](https://jisho.org/search/{})\n{} <:wow:1376760017486741544>", self.questions[self.answer].text, ci.user.name), false)
+                    )
+            } else {
+                CreateInteractionResponseMessage::new().content(insult_message(ci.user.id, &self.questions[choice].text))
+            };
+
+            ci.create_response(self.http, CreateInteractionResponse::Message(message))
+                .await
+                .map_err(|_| InteractionExitReason::NetworkError)?;
 
             if correct {
                 break;
@@ -594,7 +689,7 @@ fn parse_custom_id(custom_id: &str) -> Option<(&str, usize)> {
 }
 
 /// Creates a randomized insult message that mentions `user_id`.
-fn insult_message(user_id: UserId) -> String {
+fn insult_message(user_id: UserId, choice: &str) -> String {
     const FUBU_LAUGH_EMOTE: &str = "<:fubu_laugh:1375302817778106490>";
     const SCRAJJ_EMOTE: &str = "<a:scrajj:1375305497267146874>";
     const ANW_EMOTE: &str = "<a:aintnoway:1375305628444004473>";
@@ -625,5 +720,5 @@ fn insult_message(user_id: UserId) -> String {
 
     let insult = INSULTS.choose(&mut rng()).unwrap();
 
-    format!("{insult} <@{user_id}>")
+    format!("{insult} <@{user_id}> ({choice})")
 }
