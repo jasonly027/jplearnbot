@@ -36,7 +36,7 @@ fn dict_entries(dir: &Path) -> Vec<Rc<RefCell<DictEntry>>> {
     let mut set: HashMap<u32, _> = HashMap::new();
     for entries in dict.into_values() {
         for entry in entries {
-            if !entry.borrow().is_annotated() {
+            if !entry.borrow().is_annotated() || BLACKLIST_IDS.contains(&entry.borrow().id) {
                 continue;
             }
 
@@ -49,6 +49,8 @@ fn dict_entries(dir: &Path) -> Vec<Rc<RefCell<DictEntry>>> {
 
     set.into_values().collect()
 }
+
+const BLACKLIST_IDS: [u32; 1] = [1577100];
 
 /// Gets a dictionary where a key is hiragana and a value
 /// is a list of [`DictEntry`]'s that contain that hiragana.

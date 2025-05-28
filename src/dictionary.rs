@@ -199,9 +199,11 @@ macro_rules! pos_enum {
             serde::Deserialize,
             serde::Serialize,
             PartialEq,
+            Eq,
+            PartialOrd,
+            Ord,
             Clone,
             Copy,
-            Eq,
             strum_macros::EnumMessage,
         )]
         pub enum Pos {

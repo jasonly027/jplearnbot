@@ -4,26 +4,30 @@ use std::{
     time::Duration,
 };
 
-use const_format::formatcp;
 use dashmap::DashMap;
-use jplearnbot::dictionary::{DictEntry, NLevel, Pos, Reading, Sense};
-use poise::serenity_prelude::{
-    ComponentInteraction, CreateActionRow, CreateButton, CreateInteractionResponse,
-    CreateInteractionResponseMessage, CreateMessage, EditMessage, UserId, http::Http,
+use jplearnbot::dictionary::{DictEntry, Kanji, NLevel, Pos, Reading, Sense};
+use lazy_static::lazy_static;
+use poise::{
+    ChoiceParameter,
+    serenity_prelude::{
+        ComponentInteraction, CreateActionRow, CreateAttachment, CreateButton, CreateEmbed,
+        CreateInteractionResponse, CreateInteractionResponseMessage, CreateMessage, EditMessage,
+        UserId, http::Http,
+    },
 };
 use rand::{
-    distr::{Bernoulli, Distribution},
     rng,
-    seq::{IndexedRandom, SliceRandom},
+    seq::{IndexedRandom, IteratorRandom, SliceRandom},
 };
 use regex::Regex;
+use strum_macros::{EnumIter, EnumString};
 use tokio::{
     sync::mpsc::{self, Receiver, Sender},
     time::timeout,
 };
 use uuid::Uuid;
 
-use crate::{Context, dictionary::Dictionary};
+use crate::{Context, dictionary::Dictionary, emote, image};
 
 /// Game modes
 #[derive(Debug, poise::ChoiceParameter, Clone, Copy)]
@@ -36,6 +40,10 @@ pub enum ModeChoice {
     HirToKan,
     #[name = "漢字 ▶ ひらがな"]
     KanToHir,
+    #[name = "漢字 ▶ English"]
+    KanToEng,
+    #[name = "English ▶ 漢字"]
+    EngToKan,
 }
 
 pub enum GameMessage {
@@ -43,6 +51,132 @@ pub enum GameMessage {
     Interaction(ComponentInteraction),
     /// Indicates game should close.
     Close,
+}
+
+#[derive(Debug, Clone, Copy, EnumString, EnumIter, strum_macros::Display)]
+pub enum PosFilter {
+    #[strum(to_string = "Nouns 名詞")]
+    Nouns,
+    #[strum(to_string = "Verbs 動詞")]
+    Verbs,
+    Prenominals,
+    Expressions,
+    Conjunctions,
+    Other,
+}
+
+impl PosFilter {
+    const fn as_pos(&self) -> &'static [Pos] {
+        const NOUNS: [Pos; 7] = [
+            Pos::N,
+            Pos::NPr,
+            Pos::NAdv,
+            Pos::NPref,
+            Pos::NSuf,
+            Pos::NT,
+            Pos::Pn,
+        ];
+
+        const VERBS: [Pos; 59] = [
+            Pos::VUnspec,
+            Pos::V1,
+            Pos::V1S,
+            Pos::V2aS,
+            Pos::V2bK,
+            Pos::V2bS,
+            Pos::V2dK,
+            Pos::V2dS,
+            Pos::V2gk,
+            Pos::V2gS,
+            Pos::V2hK,
+            Pos::V2hS,
+            Pos::V2kK,
+            Pos::V2kS,
+            Pos::V2mK,
+            Pos::V2mS,
+            Pos::V2nS,
+            Pos::V2rK,
+            Pos::V2rS,
+            Pos::V2sS,
+            Pos::V2tK,
+            Pos::V2tS,
+            Pos::V2wS,
+            Pos::V2yK,
+            Pos::V2yS,
+            Pos::V2zS,
+            Pos::V4b,
+            Pos::V4g,
+            Pos::V4h,
+            Pos::V4k,
+            Pos::V4m,
+            Pos::V4n,
+            Pos::V4r,
+            Pos::V4s,
+            Pos::V4t,
+            Pos::V5aru,
+            Pos::V5b,
+            Pos::V5g,
+            Pos::V5k,
+            Pos::V5kS,
+            Pos::V5m,
+            Pos::V5n,
+            Pos::V5r,
+            Pos::V5rI,
+            Pos::V5s,
+            Pos::V5t,
+            Pos::V5u,
+            Pos::V5uS,
+            Pos::V5uru,
+            Pos::Vi,
+            Pos::Vk,
+            Pos::Vn,
+            Pos::Vr,
+            Pos::Vs,
+            Pos::VsC,
+            Pos::VsI,
+            Pos::VsS,
+            Pos::Vt,
+            Pos::Vz,
+        ];
+
+        const PRENOMINALS: [Pos; 3] = [Pos::AdjF, Pos::AdjPn, Pos::AdjNo];
+
+        const EXPRESSIONS: [Pos; 2] = [Pos::Exp, Pos::Int];
+
+        const CONJUNCTIONS: [Pos; 1] = [Pos::Conj];
+
+        const OTHER: [Pos; 20] = [
+            Pos::AdjI,
+            Pos::AdjIx,
+            Pos::AdjKari,
+            Pos::AdjKu,
+            Pos::AdjNa,
+            Pos::AdjNari,
+            Pos::AdjShiku,
+            Pos::AdjT,
+            Pos::Adv,
+            Pos::AdvTo,
+            Pos::Aux,
+            Pos::AuxAdj,
+            Pos::AuxV,
+            Pos::Cop,
+            Pos::Ctr,
+            Pos::Num,
+            Pos::Pref,
+            Pos::Prt,
+            Pos::Suf,
+            Pos::Unc,
+        ];
+
+        match self {
+            PosFilter::Nouns => &NOUNS,
+            PosFilter::Verbs => &VERBS,
+            PosFilter::Prenominals => &PRENOMINALS,
+            PosFilter::Expressions => &EXPRESSIONS,
+            PosFilter::Conjunctions => &CONJUNCTIONS,
+            PosFilter::Other => &OTHER,
+        }
+    }
 }
 
 /// Manages all game sessions.
@@ -79,7 +213,7 @@ impl Manager {
         ctx: &Context<'_>,
         mode: ModeChoice,
         levels: Vec<NLevel>,
-        pos: Vec<Pos>,
+        filters: Vec<PosFilter>,
     ) -> Result<(), SessionAlreadyCreated> {
         let user_id = ctx.author().id;
         if self.sessions.contains_key(&user_id) {
@@ -92,7 +226,7 @@ impl Manager {
         let sessions = Arc::clone(&self.sessions);
         let dictionary = Arc::clone(&self.dictionary);
 
-        let mut pos = pos;
+        let mut pos = pos_filters_to_pos(filters);
 
         let (tx, mut rx) = mpsc::channel(10);
         self.sessions.insert(user_id, tx);
@@ -111,17 +245,13 @@ impl Manager {
                 };
 
                 let menu_id = format!("{user_id},{}", Uuid::new_v4());
-                let mut menu = Menu::new(&http, menu_id, question);
+                let mut menu = Menu::new(&http, menu_id, question, entry);
 
                 if channel_id
-                    .send_message(
+                    .send_files(
                         &http,
-                        CreateMessage::new()
-                            .content(format!(
-                                "Round {round}\nId: {}\nPrompt: {}",
-                                entry.id, menu.prompt
-                            ))
-                            .components(menu.create_components()),
+                        menu.create_files(),
+                        menu.create_message(round + 1, mode),
                     )
                     .await
                     .is_err()
@@ -185,6 +315,17 @@ impl Manager {
     }
 }
 
+/// Converts [`PosFilter`]'s to [`Pos`] using [`PosFilter::as_pos`].
+fn pos_filters_to_pos(filters: Vec<PosFilter>) -> Vec<Pos> {
+    let mut res = Vec::new();
+
+    for filter in filters {
+        res.extend_from_slice(filter.as_pos());
+    }
+
+    res
+}
+
 /// Reasons listening for component interactions should stop.
 enum InteractionExitReason {
     /// There are no more words left in the pool.
@@ -230,17 +371,36 @@ struct Question {
 impl Question {
     fn new(entry: &DictEntry, mode: ModeChoice, pos: Pos, dictionary: &Dictionary) -> Option<Self> {
         match mode {
-            ModeChoice::EngToHir => Self::new_eng_to_hir(entry, pos),
+            ModeChoice::EngToHir => Self::new_eng_to_hir(entry, pos, dictionary),
             ModeChoice::HirToEng => Self::new_hir_to_eng(entry, pos, dictionary),
             ModeChoice::HirToKan => Self::new_hir_to_kan(entry, pos, dictionary),
             ModeChoice::KanToHir => Self::new_kan_to_hir(entry, pos, dictionary),
+            ModeChoice::KanToEng => Self::new_kan_to_eng(entry, pos, dictionary),
+            ModeChoice::EngToKan => Self::new_eng_to_kan(entry, pos, dictionary),
         }
     }
 
-    fn new_eng_to_hir(entry: &DictEntry, pos: Pos) -> Option<Self> {
+    fn new_eng_to_hir(entry: &DictEntry, pos: Pos, dictionary: &Dictionary) -> Option<Self> {
         let (reading, sense) = reading_sense_pair(entry, pos)?;
 
-        let (answer, options) = create_reading_options(reading.text.clone());
+        let mut options = std::array::from_fn(|_| "".to_string());
+        options[0] = reading.text.clone();
+
+        dictionary
+            .entries
+            .iter()
+            .filter_map(|e| {
+                if e.id == entry.id {
+                    return None;
+                }
+                let (reading, _) = reading_sense_pair(e, pos)?;
+                Some(reading.text.clone())
+            })
+            .choose_multiple_fill(&mut rng(), &mut options[1..]);
+
+        options.shuffle(&mut rng());
+
+        let answer = options.iter().position(|o| reading.text == *o).unwrap();
 
         Some(Question {
             prompt: sense.gloss[0].content.clone(),
@@ -252,20 +412,152 @@ impl Question {
     fn new_hir_to_eng(entry: &DictEntry, pos: Pos, dictionary: &Dictionary) -> Option<Self> {
         let (reading, sense) = reading_sense_pair(entry, pos)?;
 
-        todo!()
+        let mut options = std::array::from_fn(|_| "".to_string());
+        options[0] = sense.gloss[0].content.clone();
+
+        dictionary
+            .entries
+            .iter()
+            .filter_map(|e| {
+                if e.id == entry.id {
+                    return None;
+                }
+                let (_, sense) = reading_sense_pair(e, pos)?;
+                Some(sense.gloss[0].content.clone())
+            })
+            .choose_multiple_fill(&mut rng(), &mut options[1..]);
+
+        options.shuffle(&mut rng());
+
+        let answer = options
+            .iter()
+            .position(|o| sense.gloss[0].content == *o)
+            .unwrap();
+
+        Some(Question {
+            prompt: reading.text.clone(),
+            options,
+            answer,
+        })
     }
 
     fn new_hir_to_kan(entry: &DictEntry, pos: Pos, dictionary: &Dictionary) -> Option<Self> {
-        todo!()
+        let (kanji, reading) = kanji_reading_pair(entry, pos)?;
+
+        let mut options = std::array::from_fn(|_| "".to_string());
+        options[0] = kanji.text.clone();
+        dictionary
+            .entries
+            .iter()
+            .filter_map(|e| {
+                if e.id == entry.id {
+                    return None;
+                }
+
+                let (kanji, _) = kanji_reading_pair(e, pos)?;
+                Some(kanji.text.clone())
+            })
+            .choose_multiple_fill(&mut rng(), &mut options[1..]);
+
+        options.shuffle(&mut rng());
+
+        let answer = options.iter().position(|o| kanji.text == *o).unwrap();
+
+        Some(Question {
+            prompt: reading.text.clone(),
+            options,
+            answer,
+        })
     }
 
     fn new_kan_to_hir(entry: &DictEntry, pos: Pos, dictionary: &Dictionary) -> Option<Self> {
-        todo!()
+        let (kanji, reading) = kanji_reading_pair(entry, pos)?;
+
+        let mut options = std::array::from_fn(|_| "".to_string());
+        options[0] = reading.text.clone();
+
+        dictionary
+            .entries
+            .iter()
+            .filter_map(|e| {
+                if e.id == entry.id {
+                    return None;
+                }
+                let (_, reading) = kanji_reading_pair(e, pos)?;
+                Some(reading.text.clone())
+            })
+            .choose_multiple_fill(&mut rng(), &mut options[1..]);
+
+        options.shuffle(&mut rng());
+
+        let answer = options.iter().position(|o| reading.text == *o).unwrap();
+
+        Some(Question {
+            prompt: kanji.text.clone(),
+            options,
+            answer,
+        })
     }
 
-    /// Convenience getter for the correct translation of the [`Self::prompt`].
-    fn answer(&self) -> &str {
-        &self.options[self.answer]
+    fn new_kan_to_eng(entry: &DictEntry, pos: Pos, dictionary: &Dictionary) -> Option<Self> {
+        let (kanji, sense) = kanji_sense_pair(entry, pos)?;
+
+        let mut options = std::array::from_fn(|_| "".to_string());
+        options[0] = sense.gloss[0].content.clone();
+
+        dictionary
+            .entries
+            .iter()
+            .filter_map(|e| {
+                if e.id == entry.id {
+                    return None;
+                }
+                let (_, sense) = kanji_sense_pair(e, pos)?;
+                Some(sense.gloss[0].content.clone())
+            })
+            .choose_multiple_fill(&mut rng(), &mut options[1..]);
+
+        options.shuffle(&mut rng());
+
+        let answer = options
+            .iter()
+            .position(|o| sense.gloss[0].content == *o)
+            .unwrap();
+
+        Some(Question {
+            prompt: kanji.text.clone(),
+            options,
+            answer,
+        })
+    }
+
+    fn new_eng_to_kan(entry: &DictEntry, pos: Pos, dictionary: &Dictionary) -> Option<Self> {
+        let (kanji, sense) = kanji_sense_pair(entry, pos)?;
+
+        let mut options = std::array::from_fn(|_| "".to_string());
+        options[0] = kanji.text.clone();
+
+        dictionary
+            .entries
+            .iter()
+            .filter_map(|e| {
+                if e.id == entry.id {
+                    return None;
+                }
+                let (kanji, _) = kanji_sense_pair(e, pos)?;
+                Some(kanji.text.clone())
+            })
+            .choose_multiple_fill(&mut rng(), &mut options[1..]);
+
+        options.shuffle(&mut rng());
+
+        let answer = options.iter().position(|o| kanji.text == *o).unwrap();
+
+        Some(Question {
+            prompt: sense.gloss[0].content.clone(),
+            options,
+            answer,
+        })
     }
 }
 
@@ -287,165 +579,36 @@ fn reading_sense_pair(entry: &DictEntry, pos: Pos) -> Option<(&Reading, &Sense)>
     Some((reading, sense))
 }
 
-/// Creates an array containing `reading` and scrambled versions of `reading`.
-/// If it takes too many tries to create a unique scrambled version of `reading`.
-/// "OPTION" is added to the array instead.
+/// Conveniently extracts a [`Kanji`] and correlated [`Reading`] from a [`DictEntry`] where
+/// the reading has the `pos` tag.
 ///
-/// Returns an index to the original `reading` and the array.
-fn create_reading_options(reading: String) -> (usize, [String; 5]) {
-    let mut res = std::array::from_fn(|_| "".to_string());
-    res[0] = reading.clone();
+/// Returns [`None`] if no possible extraction.
+fn kanji_reading_pair(entry: &DictEntry, pos: Pos) -> Option<(&Kanji, &Reading)> {
+    let sense = entry.senses.iter().find(|s| s.pos.contains(&pos))?;
 
-    'outer: for i in 1..res.len() {
-        const MAX_SCRAMBLE_TRIES: i32 = 1000;
+    let kanji = entry.kanjis.first()?;
 
-        for _ in 0..MAX_SCRAMBLE_TRIES {
-            let scrambled = scrambled(&reading);
-            if !res.contains(&scrambled) {
-                res[i] = scrambled;
-                continue 'outer;
-            }
-        }
+    let reading = entry.readings.iter().find(|r| {
+        (r.relevant_to.is_empty() || r.relevant_to.contains(&kanji.text))
+            && (sense.relevant_reading.is_empty() || sense.relevant_reading.contains(&r.text))
+    })?;
 
-        res[i] = "OPTION".to_string();
-    }
-    res.shuffle(&mut rng());
-
-    let original_idx = res.iter().position(|r| reading == *r).unwrap();
-
-    (original_idx, res)
+    Some((kanji, reading))
 }
 
-/// Scrambles the hiragana or katakana of `reading`.
-fn scrambled(reading: &str) -> String {
-    let mut rng = rng();
-    let bern = Bernoulli::new(0.5).unwrap();
-    let always_swap = reading.chars().count() < 4 || reading::swappable_ratio(reading) < 0.6;
+/// Conventiently extracts a [`Kanji`] and correlated [`Sense`] from a [`DictEntry`] where
+/// the sense has the `pos` tag and is guaranteed to have at least one gloss.
+///
+/// Returns [`None`] if no possible extraction.
+fn kanji_sense_pair(entry: &DictEntry, pos: Pos) -> Option<(&Kanji, &Sense)> {
+    let sense = entry
+        .senses
+        .iter()
+        .find(|s| s.pos.contains(&pos) && !s.gloss.is_empty())?;
 
-    reading
-        .chars()
-        .map(|c| {
-            if let Some(pool) = reading::swap_pool(c) {
-                if always_swap || bern.sample(&mut rng) {
-                    return *pool.choose(&mut rng).unwrap_or(&c);
-                }
-            }
-            c
-        })
-        .collect()
-}
+    let kanji = entry.kanjis.first()?;
 
-mod reading {
-    use std::ops::Deref;
-
-    struct Chart([[char; 5]; 8]);
-
-    impl Deref for Chart {
-        type Target = [[char; 5]; 8];
-        fn deref(&self) -> &Self::Target {
-            &self.0
-        }
-    }
-
-    const HIRA_CHART: Chart = Chart([
-        ['あ', 'い', 'う', 'え', 'お'],
-        ['か', 'き', 'く', 'け', 'こ'],
-        ['さ', 'し', 'す', 'せ', 'そ'],
-        ['た', 'ち', 'つ', 'て', 'と'],
-        ['な', 'に', 'ぬ', 'ね', 'の'],
-        ['は', 'ひ', 'ふ', 'へ', 'ほ'],
-        ['ま', 'み', 'む', 'め', 'も'],
-        ['ら', 'り', 'る', 'れ', 'ろ'],
-    ]);
-    const HIRA_WA_COL: [char; 10] = ['わ', 'あ', 'か', 'さ', 'た', 'な', 'は', 'ま', 'や', 'ら'];
-    const HIRA_Y_ROW: [char; 3] = ['や', 'ゆ', 'よ'];
-
-    const KATA_CHART: Chart = Chart([
-        ['ア', 'イ', 'ウ', 'エ', 'オ'],
-        ['カ', 'キ', 'ク', 'ケ', 'コ'],
-        ['サ', 'シ', 'ス', 'セ', 'ソ'],
-        ['タ', 'チ', 'ツ', 'テ', 'ト'],
-        ['ナ', 'ニ', 'ヌ', 'ネ', 'ノ'],
-        ['ハ', 'ヒ', 'フ', 'ヘ', 'ホ'],
-        ['マ', 'ミ', 'ム', 'メ', 'モ'],
-        ['ラ', 'リ', 'ル', 'レ', 'ロ'],
-    ]);
-    const KATA_WA_COL: [char; 10] = ['ワ', 'ア', 'カ', 'サ', 'タ', 'ナ', 'ハ', 'マ', 'ヤ', 'ラ'];
-    const KATA_Y_ROW: [char; 3] = ['ヤ', 'ユ', 'ヨ'];
-
-    /// Finds possible Hiragana or Katakana that can replace `char` in a scramble.
-    pub fn swap_pool(char: char) -> Option<Vec<char>> {
-        if let Some(pool) = chart_swap_pool(char, &HIRA_CHART) {
-            return Some(pool);
-        }
-        if char == HIRA_WA_COL[0] {
-            return Some(HIRA_WA_COL[1..].to_vec());
-        }
-        if HIRA_Y_ROW.contains(&char) {
-            return Some(HIRA_Y_ROW.iter().cloned().filter(|&h| h != char).collect());
-        }
-
-        if let Some(pool) = chart_swap_pool(char, &KATA_CHART) {
-            return Some(pool);
-        }
-        if char == KATA_WA_COL[0] {
-            return Some(KATA_WA_COL[1..].to_vec());
-        }
-        if KATA_Y_ROW.contains(&char) {
-            return Some(KATA_Y_ROW.iter().cloned().filter(|&h| h != char).collect());
-        }
-
-        None
-    }
-
-    /// Finds possible Hiragana or Katakana that can replace `char` in a scramble
-    /// in `chart`.
-    fn chart_swap_pool(char: char, chart: &Chart) -> Option<Vec<char>> {
-        let (row_idx, col_idx) = find_chart_coords(char, chart)?;
-
-        let mut neighbors: Vec<char> = chart[row_idx]
-            .iter()
-            .cloned()
-            .filter(|c| *c != char)
-            .collect();
-
-        for row in chart.iter() {
-            if row[col_idx] != char {
-                neighbors.push(row[col_idx]);
-            }
-        }
-
-        Some(neighbors)
-    }
-
-    /// Finds the position of `char` in `chart` if it's in the chart.
-    fn find_chart_coords(char: char, chart: &Chart) -> Option<(usize, usize)> {
-        for (row_idx, row) in chart.iter().enumerate() {
-            for (col_idx, col) in row.iter().enumerate() {
-                if char == *col {
-                    return Some((row_idx, col_idx));
-                }
-            }
-        }
-        None
-    }
-
-    /// Determines how many characters in `s` can be scrambled.
-    pub fn swappable_ratio(s: &str) -> f64 {
-        if s.is_empty() {
-            return 0.0;
-        }
-
-        let (mut swappable, mut total) = (0, 0);
-        for char in s.chars() {
-            if swap_pool(char).is_some() {
-                swappable += 1;
-            }
-            total += 1;
-        }
-
-        (swappable as f64) / (total as f64)
-    }
+    Some((kanji, sense))
 }
 
 /// Manages the components of a game question.
@@ -454,6 +617,7 @@ struct Menu<'a> {
     prompt: String,
     questions: Vec<QuestionComponent>,
     answer: usize,
+    entry: &'a DictEntry,
     http: &'a Http,
 }
 
@@ -468,7 +632,7 @@ struct QuestionComponent {
 }
 
 impl<'a> Menu<'a> {
-    fn new(http: &'a Http, id: String, question: Question) -> Self {
+    fn new(http: &'a Http, id: String, question: Question, entry: &'a DictEntry) -> Self {
         let questions = question
             .options
             .into_iter()
@@ -485,13 +649,47 @@ impl<'a> Menu<'a> {
             prompt: question.prompt,
             questions,
             answer: question.answer,
+            entry,
             http,
         }
     }
 
-    /// Equivalent to [`Self::questions`][].[`id`]
+    /// Collects all the levels of [`Self::entry`].
+    fn levels(&self) -> Vec<NLevel> {
+        let mut levels: Vec<_> = self
+            .entry
+            .readings
+            .iter()
+            .flat_map(|r| r.levels.clone())
+            .collect();
+
+        levels.sort_unstable();
+        levels.dedup();
+
+        levels
+    }
+
+    /// Equivalent to [`Self::questions`]\[\].[`id`]
     fn answer_id(&self) -> &str {
         &self.questions[self.answer].id
+    }
+
+    fn create_files(&self) -> Vec<CreateAttachment> {
+        vec![CreateAttachment::bytes(
+            image::text_to_image(&self.prompt),
+            "prompt.png",
+        )]
+    }
+
+    fn create_message(&self, round: usize, mode: ModeChoice) -> CreateMessage {
+        CreateMessage::new()
+            .embed(
+                CreateEmbed::new()
+                    .title(format!("Question {round}"))
+                    .field(mode.name(), "", false)
+                    .attachment("prompt.png"),
+            )
+            .components(self.create_components())
     }
 
     /// Create all of the components of this menu.
@@ -539,18 +737,30 @@ impl<'a> Menu<'a> {
                 .await
                 .map_err(|_| InteractionExitReason::NetworkError)?;
 
-            ci.create_response(
-                self.http,
-                CreateInteractionResponse::Message(
-                    CreateInteractionResponseMessage::new().content(if correct {
-                        format!("<:correct:1375301870200819932> correct <@{}>", ci.user.id)
-                    } else {
-                        insult_message(ci.user.id)
-                    }),
-                ),
-            )
-            .await
-            .map_err(|_| InteractionExitReason::NetworkError)?;
+            let message = if correct {
+                const THUMBNAIL: &str = r"https://raw.githubusercontent.com/jasonly027/jplearnbot/dedaa826e9bbc942cf035ba8eeac15479e8d9416/assets/correct.png";
+                let header = format!("{} {:?}", &self.questions[self.answer].text, self.levels());
+                let body = format!(
+                    "[**Definition ・ 意味**](https://jisho.org/search/{})\n{} {}",
+                    urlencoding::encode(&self.questions[self.answer].text),
+                    ci.user.name,
+                    emote::WOW.as_str()
+                );
+
+                CreateInteractionResponseMessage::new().embed(
+                    CreateEmbed::new()
+                        .title("Answer · 正解")
+                        .thumbnail(THUMBNAIL)
+                        .field(header, body, false),
+                )
+            } else {
+                CreateInteractionResponseMessage::new()
+                    .content(insult_message(ci.user.id, &self.questions[choice].text))
+            };
+
+            ci.create_response(self.http, CreateInteractionResponse::Message(message))
+                .await
+                .map_err(|_| InteractionExitReason::NetworkError)?;
 
             if correct {
                 break;
@@ -594,36 +804,33 @@ fn parse_custom_id(custom_id: &str) -> Option<(&str, usize)> {
 }
 
 /// Creates a randomized insult message that mentions `user_id`.
-fn insult_message(user_id: UserId) -> String {
-    const FUBU_LAUGH_EMOTE: &str = "<:fubu_laugh:1375302817778106490>";
-    const SCRAJJ_EMOTE: &str = "<a:scrajj:1375305497267146874>";
-    const ANW_EMOTE: &str = "<a:aintnoway:1375305628444004473>";
-    const WAT_EMOTE: &str = "<:wat:1373080615313739858>";
+fn insult_message(user_id: UserId, choice: &str) -> String {
+    lazy_static! {
+        static ref insults: [String; 20] = [
+            format!("{} noob", emote::WAT.as_str()),
+            format!("{} nuh-uh", emote::WAT.as_str()),
+            format!("{} what is he cooking", emote::WAT.as_str()),
+            format!("{} refund nitro", emote::WAT.as_str()),
+            format!("{} trolling are we?", emote::WAT.as_str()),
+            format!("{} nt bro", emote::WAT.as_str()),
+            format!("{} smooth brain", emote::WAT.as_str()),
+            format!("{} stop", emote::WAT.as_str()),
+            format!("{} ?", emote::WAT.as_str()),
+            format!("{} so bad", emote::WAT.as_str()),
+            format!("{} meow", emote::WAT.as_str()),
+            format!("{} imagine", emote::WAT.as_str()),
+            format!("{} no", emote::WAT.as_str()),
+            format!("{} wrong", emote::WAT.as_str()),
+            format!("{} ぴえん", emote::WAT.as_str()),
+            format!("{} あほ", emote::WAT.as_str()),
+            emote::WAT.to_string(),
+            emote::FUBU_LAUGH.to_string(),
+            emote::SCRAJJ.to_string(),
+            emote::ANW.to_string(),
+        ];
+    }
 
-    const INSULTS: [&str; 20] = [
-        formatcp!("{WAT_EMOTE} noob"),
-        formatcp!("{WAT_EMOTE} nuh-uh"),
-        formatcp!("{WAT_EMOTE} what is he cooking"),
-        formatcp!("{WAT_EMOTE} refund nitro"),
-        formatcp!("{WAT_EMOTE} trolling are we?"),
-        formatcp!("{WAT_EMOTE} nt bro"),
-        formatcp!("{WAT_EMOTE} smooth brain"),
-        formatcp!("{WAT_EMOTE} stop"),
-        formatcp!("{WAT_EMOTE} ?"),
-        formatcp!("{WAT_EMOTE} so bad"),
-        formatcp!("{WAT_EMOTE} meow"),
-        formatcp!("{WAT_EMOTE} imagine"),
-        formatcp!("{WAT_EMOTE} no"),
-        formatcp!("{WAT_EMOTE} wrong"),
-        formatcp!("{WAT_EMOTE} ぴえん"),
-        formatcp!("{WAT_EMOTE} あほ"),
-        WAT_EMOTE,
-        FUBU_LAUGH_EMOTE,
-        SCRAJJ_EMOTE,
-        ANW_EMOTE,
-    ];
+    let insult = insults.choose(&mut rng()).unwrap();
 
-    let insult = INSULTS.choose(&mut rng()).unwrap();
-
-    format!("{insult} <@{user_id}>")
+    format!("{insult} <@{user_id}> ({choice})")
 }

@@ -9,7 +9,7 @@ use rand::seq::SliceRandom;
 /// Contains [`DictEntry`]'s.
 pub struct Dictionary {
     /// Contains all of the entries.
-    entries: Vec<Arc<DictEntry>>,
+    pub entries: Vec<Arc<DictEntry>>,
 }
 
 impl Default for Dictionary {
