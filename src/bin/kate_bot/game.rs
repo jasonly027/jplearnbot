@@ -59,8 +59,11 @@ pub enum PosFilter {
     Nouns,
     #[strum(to_string = "Verbs 動詞")]
     Verbs,
+    #[strum(to_string = "Prenominals 敬称略")]
     Prenominals,
+    #[strum(to_string = "Expression 表現")]
     Expressions,
+    #[strum(to_string = "Conjunctions 接続詞")]
     Conjunctions,
     Other,
 }
