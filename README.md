@@ -20,6 +20,7 @@
 
 ![Questions](.github/assets/questions.png)
 ![Game Modes](.github/assets/game_modes.png)
+![Filters](.github/assets/filters.png)
 
 <h2 id="attrib">📑 Attributions</h2>
 
