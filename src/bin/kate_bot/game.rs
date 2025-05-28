@@ -4,12 +4,16 @@ use std::{
     time::Duration,
 };
 
-use const_format::formatcp;
 use dashmap::DashMap;
 use jplearnbot::dictionary::{DictEntry, Kanji, NLevel, Pos, Reading, Sense};
-use poise::serenity_prelude::{
-    ComponentInteraction, CreateActionRow, CreateButton, CreateEmbed, CreateInteractionResponse,
-    CreateInteractionResponseMessage, CreateMessage, EditMessage, UserId, http::Http,
+use lazy_static::lazy_static;
+use poise::{
+    ChoiceParameter,
+    serenity_prelude::{
+        ComponentInteraction, CreateActionRow, CreateAttachment, CreateButton, CreateEmbed,
+        CreateInteractionResponse, CreateInteractionResponseMessage, CreateMessage, EditMessage,
+        UserId, http::Http,
+    },
 };
 use rand::{
     rng,
@@ -23,7 +27,7 @@ use tokio::{
 };
 use uuid::Uuid;
 
-use crate::{Context, dictionary::Dictionary};
+use crate::{Context, dictionary::Dictionary, emote, image};
 
 /// Game modes
 #[derive(Debug, poise::ChoiceParameter, Clone, Copy)]
@@ -62,7 +66,7 @@ pub enum PosFilter {
 }
 
 impl PosFilter {
-    fn as_pos(&self) -> &'static [Pos] {
+    const fn as_pos(&self) -> &'static [Pos] {
         const NOUNS: [Pos; 7] = [
             Pos::N,
             Pos::NPr,
@@ -244,14 +248,10 @@ impl Manager {
                 let mut menu = Menu::new(&http, menu_id, question, entry);
 
                 if channel_id
-                    .send_message(
+                    .send_files(
                         &http,
-                        CreateMessage::new()
-                            .content(format!(
-                                "Round {round}\nId: {}\nPrompt: {}",
-                                entry.id, menu.prompt
-                            ))
-                            .components(menu.create_components()),
+                        menu.create_files(),
+                        menu.create_message(round + 1, mode),
                     )
                     .await
                     .is_err()
@@ -315,6 +315,7 @@ impl Manager {
     }
 }
 
+/// Converts [`PosFilter`]'s to [`Pos`] using [`PosFilter::as_pos`].
 fn pos_filters_to_pos(filters: Vec<PosFilter>) -> Vec<Pos> {
     let mut res = Vec::new();
 
@@ -558,7 +559,6 @@ impl Question {
             answer,
         })
     }
-
 }
 
 /// Conventiently extracts a [`Reading`] and correlated [`Sense`] from a [`DictEntry`] where
@@ -579,6 +579,10 @@ fn reading_sense_pair(entry: &DictEntry, pos: Pos) -> Option<(&Reading, &Sense)>
     Some((reading, sense))
 }
 
+/// Conveniently extracts a [`Kanji`] and correlated [`Reading`] from a [`DictEntry`] where
+/// the reading has the `pos` tag.
+///
+/// Returns [`None`] if no possible extraction.
 fn kanji_reading_pair(entry: &DictEntry, pos: Pos) -> Option<(&Kanji, &Reading)> {
     let sense = entry.senses.iter().find(|s| s.pos.contains(&pos))?;
 
@@ -592,6 +596,10 @@ fn kanji_reading_pair(entry: &DictEntry, pos: Pos) -> Option<(&Kanji, &Reading)>
     Some((kanji, reading))
 }
 
+/// Conventiently extracts a [`Kanji`] and correlated [`Sense`] from a [`DictEntry`] where
+/// the sense has the `pos` tag and is guaranteed to have at least one gloss.
+///
+/// Returns [`None`] if no possible extraction.
 fn kanji_sense_pair(entry: &DictEntry, pos: Pos) -> Option<(&Kanji, &Sense)> {
     let sense = entry
         .senses
@@ -646,6 +654,7 @@ impl<'a> Menu<'a> {
         }
     }
 
+    /// Collects all the levels of [`Self::entry`].
     fn levels(&self) -> Vec<NLevel> {
         let mut levels: Vec<_> = self
             .entry
@@ -663,6 +672,24 @@ impl<'a> Menu<'a> {
     /// Equivalent to [`Self::questions`]\[\].[`id`]
     fn answer_id(&self) -> &str {
         &self.questions[self.answer].id
+    }
+
+    fn create_files(&self) -> Vec<CreateAttachment> {
+        vec![CreateAttachment::bytes(
+            image::text_to_image(&self.prompt),
+            "prompt.png",
+        )]
+    }
+
+    fn create_message(&self, round: usize, mode: ModeChoice) -> CreateMessage {
+        CreateMessage::new()
+            .embed(
+                CreateEmbed::new()
+                    .title(format!("Question {round}"))
+                    .field(mode.name(), "", false)
+                    .attachment("prompt.png"),
+            )
+            .components(self.create_components())
     }
 
     /// Create all of the components of this menu.
@@ -711,13 +738,21 @@ impl<'a> Menu<'a> {
                 .map_err(|_| InteractionExitReason::NetworkError)?;
 
             let message = if correct {
-                CreateInteractionResponseMessage::new()
-                    .embed(
-                        CreateEmbed::new()
-                            .title("Answer · 正解")
-                            .thumbnail(r"https://raw.githubusercontent.com/jasonly027/jplearnbot/dedaa826e9bbc942cf035ba8eeac15479e8d9416/assets/correct.png")
-                            .field(format!("{} {:?}",&self.questions[self.answer].text, self.levels()), format!("[**Definition ・ 意味**](https://jisho.org/search/{})\n{} <:wow:1376760017486741544>", self.questions[self.answer].text, ci.user.name), false)
-                    )
+                const THUMBNAIL: &str = r"https://raw.githubusercontent.com/jasonly027/jplearnbot/dedaa826e9bbc942cf035ba8eeac15479e8d9416/assets/correct.png";
+                let header = format!("{} {:?}", &self.questions[self.answer].text, self.levels());
+                let body = format!(
+                    "[**Definition ・ 意味**](https://jisho.org/search/{})\n{} {}",
+                    urlencoding::encode(&self.questions[self.answer].text),
+                    ci.user.name,
+                    emote::WOW.as_str()
+                );
+
+                CreateInteractionResponseMessage::new().embed(
+                    CreateEmbed::new()
+                        .title("Answer · 正解")
+                        .thumbnail(THUMBNAIL)
+                        .field(header, body, false),
+                )
             } else {
                 CreateInteractionResponseMessage::new()
                     .content(insult_message(ci.user.id, &self.questions[choice].text))
@@ -770,35 +805,32 @@ fn parse_custom_id(custom_id: &str) -> Option<(&str, usize)> {
 
 /// Creates a randomized insult message that mentions `user_id`.
 fn insult_message(user_id: UserId, choice: &str) -> String {
-    const FUBU_LAUGH_EMOTE: &str = "<:fubu_laugh:1375302817778106490>";
-    const SCRAJJ_EMOTE: &str = "<a:scrajj:1375305497267146874>";
-    const ANW_EMOTE: &str = "<a:aintnoway:1375305628444004473>";
-    const WAT_EMOTE: &str = "<:wat:1373080615313739858>";
+    lazy_static! {
+        static ref insults: [String; 20] = [
+            format!("{} noob", emote::WAT.as_str()),
+            format!("{} nuh-uh", emote::WAT.as_str()),
+            format!("{} what is he cooking", emote::WAT.as_str()),
+            format!("{} refund nitro", emote::WAT.as_str()),
+            format!("{} trolling are we?", emote::WAT.as_str()),
+            format!("{} nt bro", emote::WAT.as_str()),
+            format!("{} smooth brain", emote::WAT.as_str()),
+            format!("{} stop", emote::WAT.as_str()),
+            format!("{} ?", emote::WAT.as_str()),
+            format!("{} so bad", emote::WAT.as_str()),
+            format!("{} meow", emote::WAT.as_str()),
+            format!("{} imagine", emote::WAT.as_str()),
+            format!("{} no", emote::WAT.as_str()),
+            format!("{} wrong", emote::WAT.as_str()),
+            format!("{} ぴえん", emote::WAT.as_str()),
+            format!("{} あほ", emote::WAT.as_str()),
+            emote::WAT.to_string(),
+            emote::FUBU_LAUGH.to_string(),
+            emote::SCRAJJ.to_string(),
+            emote::ANW.to_string(),
+        ];
+    }
 
-    const INSULTS: [&str; 20] = [
-        formatcp!("{WAT_EMOTE} noob"),
-        formatcp!("{WAT_EMOTE} nuh-uh"),
-        formatcp!("{WAT_EMOTE} what is he cooking"),
-        formatcp!("{WAT_EMOTE} refund nitro"),
-        formatcp!("{WAT_EMOTE} trolling are we?"),
-        formatcp!("{WAT_EMOTE} nt bro"),
-        formatcp!("{WAT_EMOTE} smooth brain"),
-        formatcp!("{WAT_EMOTE} stop"),
-        formatcp!("{WAT_EMOTE} ?"),
-        formatcp!("{WAT_EMOTE} so bad"),
-        formatcp!("{WAT_EMOTE} meow"),
-        formatcp!("{WAT_EMOTE} imagine"),
-        formatcp!("{WAT_EMOTE} no"),
-        formatcp!("{WAT_EMOTE} wrong"),
-        formatcp!("{WAT_EMOTE} ぴえん"),
-        formatcp!("{WAT_EMOTE} あほ"),
-        WAT_EMOTE,
-        FUBU_LAUGH_EMOTE,
-        SCRAJJ_EMOTE,
-        ANW_EMOTE,
-    ];
-
-    let insult = INSULTS.choose(&mut rng()).unwrap();
+    let insult = insults.choose(&mut rng()).unwrap();
 
     format!("{insult} <@{user_id}> ({choice})")
 }

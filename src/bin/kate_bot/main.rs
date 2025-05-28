@@ -9,6 +9,8 @@ use poise::{
 mod command;
 mod dictionary;
 mod game;
+mod image;
+mod emote;
 
 pub struct Data {
     pub manager: Arc<game::Manager>,
@@ -25,7 +27,7 @@ async fn main() {
 
     let framework: Framework<Data, Error> = poise::Framework::builder()
         .options(poise::FrameworkOptions {
-            commands: vec![command::start(), command::stop()],
+            commands: vec![command::start(), command::stop(), command::info()],
             event_handler: |_ctx, event, framework, _data| {
                 Box::pin(event_handler(event.clone(), framework))
             },
@@ -33,12 +35,21 @@ async fn main() {
         })
         .setup(|ctx, _ready, framework| {
             Box::pin(async move {
-                poise::builtins::register_in_guild(
-                    ctx,
-                    &framework.options().commands,
-                    GuildId::new(1148122592293699584),
-                )
-                .await?;
+                if let Ok(guild_id) =
+                    std::env::var("DISCORD_DEV_GUILD_ID").map(|v| v.parse().unwrap())
+                {
+                    println!("Registering commands to DEV Guild");
+                    poise::builtins::register_in_guild(
+                        ctx,
+                        &framework.options().commands,
+                        GuildId::new(guild_id),
+                    )
+                    .await?;
+                } else {
+                    println!("Registering commands globally");
+                    poise::builtins::register_globally(ctx, &framework.options().commands).await?;
+                }
+
                 Ok(Data {
                     manager: game::Manager::new(ctx.http.clone()).into(),
                 })

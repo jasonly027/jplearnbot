@@ -4,7 +4,7 @@ use crate::{
     Context, Error,
     game::{ModeChoice, PosFilter},
 };
-use jplearnbot::dictionary::{NLevel, Pos};
+use jplearnbot::dictionary::{NLevel};
 use poise::serenity_prelude::{
     ComponentInteractionCollector, ComponentInteractionDataKind, CreateActionRow, CreateButton,
     CreateInteractionResponse, CreateInteractionResponseMessage, CreateSelectMenu,
@@ -12,7 +12,7 @@ use poise::serenity_prelude::{
 };
 use strum::IntoEnumIterator;
 
-/// Starts a new game
+/// Starts a new game.
 #[poise::command(
     slash_command,
     user_cooldown = 3,
