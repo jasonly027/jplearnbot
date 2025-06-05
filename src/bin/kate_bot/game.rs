@@ -188,9 +188,9 @@ pub struct Manager {
     http: Arc<Http>,
     /// Dictionary for getting randomized samples and entries.
     dictionary: Arc<Dictionary>,
-    /// Stores transmitters to game sessions. Mapped to each UserId
-    /// because users may have exactly one running game session.
-    sessions: Arc<DashMap<UserId, Sender<GameMessage>>>,
+    /// Stores transmitters to game sessions. A Server/DM may only have
+    /// one active game session.
+    sessions: Arc<DashMap<u64, Sender<GameMessage>>>,
 }
 
 impl Manager {
@@ -210,7 +210,7 @@ impl Manager {
     /// a [`GameMessage::Close`] through the sender.
     ///
     /// # Errors
-    /// Fails if user already has a running game.
+    /// Fails if user already has an active game.
     pub fn start_game(
         &self,
         ctx: &Context<'_>,
@@ -218,8 +218,12 @@ impl Manager {
         levels: Vec<NLevel>,
         filters: Vec<PosFilter>,
     ) -> Result<(), SessionAlreadyCreated> {
-        let user_id = ctx.author().id;
-        if self.sessions.contains_key(&user_id) {
+        let session_id = ctx
+            .guild_id()
+            .map(|g| g.get())
+            .unwrap_or(ctx.author().id.get());
+
+        if self.sessions.contains_key(&session_id) {
             return Err(SessionAlreadyCreated);
         }
 
@@ -232,7 +236,7 @@ impl Manager {
         let mut pos = pos_filters_to_pos(filters);
 
         let (tx, mut rx) = mpsc::channel(10);
-        self.sessions.insert(user_id, tx);
+        self.sessions.insert(session_id, tx);
 
         tokio::spawn(async move {
             // Natural expected exit reason, reason may change from interactions or lack thereof.
@@ -247,7 +251,7 @@ impl Manager {
                     continue;
                 };
 
-                let menu_id = format!("{user_id},{}", Uuid::new_v4());
+                let menu_id = format!("{session_id},{}", Uuid::new_v4());
                 let mut menu = Menu::new(&http, menu_id, question, entry);
 
                 if channel_id
@@ -287,19 +291,19 @@ impl Manager {
                     .ok();
             }
 
-            sessions.remove(&user_id);
+            sessions.remove(&session_id);
         });
 
         Ok(())
     }
 
-    /// Stops `user_id`'s game if it exists.
+    /// Stops `session_id`'s game if it exists.
     ///
-    /// Returns true if there was a running game stopped.
+    /// Returns true if there was an active game stopped.
     ///
-    /// Returns false if there was no game associated with the user.
-    pub async fn stop(&self, user_id: UserId) -> bool {
-        if let Some(tx) = self.sessions.get(&user_id) {
+    /// Returns false if there was no game associated with the `session_id`.
+    pub async fn stop(&self, session_id: u64) -> bool {
+        if let Some(tx) = self.sessions.get(&session_id) {
             tx.send(GameMessage::Close).await.ok();
             return true;
         }
@@ -311,7 +315,7 @@ impl Manager {
     /// Does nothing if no matching game sesssion.
     pub async fn send(&self, interaction: ComponentInteraction) {
         if let Some(tx) =
-            parse_user_id(&interaction.data.custom_id).and_then(|id| self.sessions.get(&id))
+            parse_session_id(&interaction.data.custom_id).and_then(|id| self.sessions.get(&id))
         {
             tx.send(GameMessage::Interaction(interaction)).await.ok();
         }
@@ -341,13 +345,13 @@ enum InteractionExitReason {
     CloseRequest,
 }
 
-/// Extracts UserId from interaction's custom_id.
-fn parse_user_id(interaction_id: &str) -> Option<UserId> {
+/// Extracts game session_id from interaction's custom_id.
+fn parse_session_id(interaction_id: &str) -> Option<u64> {
     static RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\d+").unwrap());
 
-    let user_id = RE.find(interaction_id)?.as_str().parse().ok()?;
+    let session_id = RE.find(interaction_id)?.as_str().parse().ok()?;
 
-    Some(UserId::new(user_id))
+    Some(session_id)
 }
 
 #[derive(Debug)]

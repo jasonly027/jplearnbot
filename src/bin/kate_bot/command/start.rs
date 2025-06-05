@@ -211,7 +211,7 @@ impl<'a> FiltersMenu<'a> {
                         ci.edit_response(
                             self.ctx,
                             EditInteractionResponse::new().content(
-                                "You've already started a game. Please stop it to start a new one.",
+                                "Active game in progress. Please stop it.",
                             ),
                         )
                         .await?;
