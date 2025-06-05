@@ -1,6 +1,6 @@
 use crate::{Context, Error};
 
-/// Stops any game you created.
+/// Stops the active game, if any.
 #[poise::command(
     slash_command,
     user_cooldown = 3,
@@ -8,12 +8,13 @@ use crate::{Context, Error};
     description_localized("ja", "ゲームを止まる")
 )]
 pub async fn stop(ctx: Context<'_>) -> Result<(), Error> {
-    let stopped = ctx.data().manager.stop(ctx.author().id).await;
+    let session_id = ctx.guild_id().map(|g| g.get()).unwrap_or(ctx.author().id.get());
+    let stopped = ctx.data().manager.stop(session_id).await;
 
     if stopped {
         ctx.say("Stopping game...").await?;
     } else {
-        ctx.say("There is no running game to stop").await?;
+        ctx.say("There is no active game to stop.").await?;
     }
 
     Ok(())
